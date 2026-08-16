@@ -1,0 +1,112 @@
+# MyAutoTrain 兼容性说明
+
+本文档说明 MyAutoTrain Team 的运行环境、硬件要求、依赖选择和已知限制。
+
+## 支持范围
+
+| 项目 | 支持情况 |
+| --- | --- |
+| Windows | Windows 10/11，使用 Windows PowerShell 5.1 |
+| Ubuntu | Ubuntu 22.04/24.04，使用 Bash |
+| Python | 3.10–3.14 |
+| NVIDIA GPU | 自动使用 CUDA 12.8 PyTorch 训练组件 |
+| 无 NVIDIA GPU | 自动使用 CPU 版 PyTorch，功能完整但训练较慢 |
+| 浏览器 | Chrome、Edge、Firefox 等现代浏览器 |
+| macOS | 当前未提供一键部署脚本，未做完整验证 |
+| ARM/树莓派 | 当前未做完整验证；建议使用 x86_64 主机训练 |
+
+Python 3.15 及更高版本暂不列入保证范围，即使部分依赖已经提供对应 wheel，也可能出现 PyTorch、OpenCV 或 ONNX 组件不兼容。
+
+## NVIDIA GPU 要求
+
+Windows 或 Ubuntu 机器需要：
+
+1. 正常安装 NVIDIA 显卡驱动。
+2. 在终端运行 `nvidia-smi` 能看到显卡信息。
+3. 具备足够磁盘空间下载 PyTorch 和 CUDA 运行库。
+
+安装器会安装 PyTorch 自带的 CUDA 运行时，不要求用户另外安装 CUDA Toolkit。驱动版本仍然需要满足 PyTorch/CUDA 12.8 的兼容要求。
+
+建议显存：
+
+| 显存 | 建议 Batch |
+| --- | --- |
+| 4 GB 以下 | 2–4 |
+| 4–6 GB | 4–8 |
+| 6–8 GB | 8 |
+| 8 GB 以上 | 8–16 |
+
+实际 Batch 还会受到图片尺寸、模型大小、数据增强和数据加载进程数量影响。显存不足时优先降低 Batch。
+
+## 自动安装的核心组件
+
+- `torch`、`torchvision`、`torchaudio`
+- `ultralytics`
+- `opencv-contrib-python`
+- `onnx`、`onnxsim`、`onnxslim`
+- `onnxruntime`
+- `Pillow`、`PyYAML`、`psutil`
+
+Windows 一键安装脚本和 Ubuntu 安装脚本都会创建项目自己的 `.venv`，不会把这些依赖写入系统 Python。
+
+## 网络与磁盘
+
+首次安装需要访问：
+
+- PyPI 或可用的 Python 包镜像
+- `download.pytorch.org`，下载 PyTorch
+- GitHub Ultralytics Release，下载 `yolo11n.pt`
+
+NVIDIA 环境首次安装可能需要数 GB 磁盘空间。建议预留至少 8–12 GB 可用空间；训练数据、缓存和输出模型需要额外空间。
+
+## 已知限制
+
+- 面板默认只监听 `127.0.0.1:8989`，只允许本机访问。
+- 如需远程使用，建议通过 SSH 端口转发或反向代理，不建议直接暴露到公网。
+- Ubuntu 脚本会优先寻找本机已有的 Python 3.10–3.14；如果没有，会尝试通过 `apt` 安装 `python3`、`python3-venv` 和 `python3-pip`。如果发行版默认 Python 低于 3.10，需要手动安装受支持版本。
+- Python、PyTorch、Ultralytics 和 ONNX 依赖会持续更新；发布新版本前建议在干净的 Windows 和 Ubuntu 环境各测试一次。
+
+## 常见排错
+
+### 找不到 Python
+
+检查版本：
+
+```bash
+python3 --version
+```
+
+必须是 Python 3.10–3.14。Ubuntu 可安装 `python3-venv` 后重新运行部署脚本。
+
+### 找不到 CUDA
+
+检查：
+
+```bash
+nvidia-smi
+```
+
+如果命令不存在或没有显卡信息，安装器会退回 CPU 模式。
+
+### 缺少 onnxruntime
+
+重新运行安装器，或在项目虚拟环境中执行：
+
+```bash
+.venv/bin/python -m pip install -r requirements.txt
+```
+
+Windows 使用：
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+### 查看诊断报告
+
+安装器会生成 `logs/system_check.json`。面板启动失败时，重点查看：
+
+- `logs/install.log` 或 `logs/install_ubuntu.log`
+- `logs/launcher.log`
+- `logs/panel.log`
+- `logs/system_check.json`

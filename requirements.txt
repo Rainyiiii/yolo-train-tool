@@ -1,0 +1,9 @@
+ultralytics>=8.4,<9
+opencv-contrib-python>=4.10,<5
+Pillow>=10,<13
+onnx>=1.17,<2
+onnxsim>=0.4.36,<1
+onnxslim>=0.1.71,<1
+onnxruntime>=1.18,<2
+PyYAML>=6,<7
+psutil>=6,<8

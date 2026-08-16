@@ -1,0 +1,33 @@
+# Python environments and caches
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# Local configuration and runtime state
+train_panel_defaults.json
+.train_panel.pid.json
+config/
+cache/
+jobs/
+
+# Logs and generated reports
+logs/
+*.log
+
+# Models, training outputs and temporary workspaces
+*.pt
+*.onnx
+outputs_*/
+.maixcam_work_*/
+
+# Distribution artifacts
+dist/
+*.zip
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

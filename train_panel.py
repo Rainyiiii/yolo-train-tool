@@ -1,0 +1,3328 @@
+# -*- coding: utf-8 -*-
+import argparse
+import importlib.util
+import json
+import locale
+import mimetypes
+import os
+import re
+import shutil
+import signal
+import struct
+import subprocess
+import sys
+import threading
+import time
+import uuid
+import webbrowser
+
+
+import xml.etree.ElementTree as ET
+from collections import OrderedDict
+from dataclasses import dataclass
+from http import HTTPStatus
+
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Any, Optional
+from urllib.parse import parse_qs, urlparse
+
+import cv2
+import yaml
+
+
+
+def configure_stdio() -> None:
+    for name in ("stdout", "stderr"):
+        stream = getattr(sys, name, None)
+        if stream is None:
+            continue
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
+
+
+configure_stdio()
+
+
+SCRIPT_ROOT = Path(__file__).resolve().parent
+
+WORKFLOW_SCRIPT = SCRIPT_ROOT / "host_train_export.py"
+TEST_SCRIPT = SCRIPT_ROOT / "model_test.py"
+LABEL_SCRIPT = SCRIPT_ROOT / "video_track_label.py"
+DEFAULT_VM_WORK_DIR = "~/桌面/12345/douzi_maixcam_jobs"
+USER_DEFAULTS_FILE = SCRIPT_ROOT / "train_panel_defaults.json"
+STOP_EXPORT_SIGNAL_FILE = SCRIPT_ROOT / ".train_stop_export.signal"
+LATEST_JOB_LOG_FILE = SCRIPT_ROOT / "logs" / "latest_job.log"
+VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".wmv", ".flv", ".webm", ".m4v", ".mpg", ".mpeg"}
+
+TRAIN_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+
+
+
+
+
+
+DEFAULT_VALUES: dict[str, Any] = {
+    "dataset_root": str(SCRIPT_ROOT),
+    "train_task": "detect",
+    "train_images_dir": str(SCRIPT_ROOT / "images"),
+    "train_annotations_dir": str(SCRIPT_ROOT / "annotations"),
+    "prepared_dataset_yaml": "",
+    "train_ratio_percent": "80",
+    "img_width": "640",
+    "img_height": "480",
+    "image_resize_mode": "letterbox",
+
+    "epochs": "10000",
+    "batch": "16",
+    "train_workers": "4",
+    "patience": "0",
+    "lr0": "0.005",
+    "conda_env": "",
+    "base_model": "yolo11n.pt",
+    "torch_cuda": "cu128",
+    "train_device": "cuda",
+    "train_cache": "disk",
+    "raw_dataset_root": "",
+    "raw_images_dir": "",
+    "raw_labels_dir": "",
+    "raw_output_dir": "",
+    "raw_class_names": "",
+    "raw_overwrite": False,
+
+    "project_name": "my_yolo_project",
+    "model_name": "my_yolo_model",
+    "operator_mode": "recommended",
+    "train_mode": "local",
+    "remote_train_user": "",
+    "remote_train_host": "127.0.0.1",
+    "remote_train_port": "8989",
+    "remote_train_work_dir": "C:/douzi_train_jobs",
+    "model_path": "",
+    "classes_path": "",
+    "calib_dir": "",
+    "test_image": "",
+    "vm_user": "",
+    "vm_host": "",
+    "vm_work_dir": DEFAULT_VM_WORK_DIR,
+    "skip_vm_convert": False,
+    "test_model": "",
+    "test_source": "camera",
+    "test_image_file": "",
+    "test_image_folder": "",
+    "test_output_dir": "",
+    "camera_index": "0",
+    "conf": "0.25",
+    "label_video_dir": "",
+    "label_video": "",
+    "label_camera_index": "0",
+    "label_source_type": "video",
+    "label_images_input_dir": "",
+    "label_name": "object",
+
+    "label_interval": "5",
+    "label_images_dir": str(SCRIPT_ROOT / "images"),
+    "label_annotations_dir": str(SCRIPT_ROOT / "annotations"),
+    "label_prefix": "track",
+    "label_tracker": "csrt",
+    "label_start_frame": "0",
+    "label_max_frames": "0",
+    "label_display_scale": "1.0",
+    "label_jpeg_quality": "95",
+}
+
+
+
+
+
+STATE_LOCK = threading.RLock()
+STATE: dict[str, Any] = {
+    "values": DEFAULT_VALUES.copy(),
+    "logs": [],
+    "markers": {},
+    "train_progress": {
+        "phase": "idle",
+        "task": "",
+        "epoch": 0,
+        "total_epochs": 0,
+        "batch": 0,
+        "total_batches": 0,
+        "percent": 0.0,
+        "gpu_mem": "",
+        "loss": None,
+        "box_loss": None,
+        "cls_loss": None,
+        "dfl_loss": None,
+        "instances": None,
+        "size": None,
+        "speed": "",
+        "elapsed": "",
+        "eta": "",
+        "val_batch": 0,
+        "val_total": 0,
+        "val_percent": 0.0,
+        "metrics": {},
+        "history": [],
+        "updated_at": "",
+    },
+    "running": False,
+    "job": None,
+    "exit_code": None,
+    "started_at": None,
+    "finished_at": None,
+    "last_error": "",
+}
+@dataclass
+class LabelTrackObject:
+    obj_id: int
+    label: str
+    bbox: tuple[int, int, int, int]
+    tracker: object
+    ok: bool = True
+    sample_count: int = 1
+
+
+class TemplateTracker:
+    def __init__(self, search_scale: float = 2.5, min_score: float = 0.45):
+        self.search_scale = search_scale
+        self.min_score = min_score
+        self.template = None
+        self.bbox: Optional[tuple[int, int, int, int]] = None
+
+    def init(self, frame, bbox: tuple[int, int, int, int]) -> bool:
+        x, y, w, h = sanitize_label_bbox(bbox, frame.shape[1], frame.shape[0])
+        if w <= 2 or h <= 2:
+            return False
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        self.template = gray[y:y + h, x:x + w].copy()
+        self.bbox = (x, y, w, h)
+        return True
+
+    def update(self, frame):
+        if self.template is None or self.bbox is None:
+            return False, (0, 0, 0, 0)
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        x, y, w, h = self.bbox
+        pad_x, pad_y = max(int(w * self.search_scale), 20), max(int(h * self.search_scale), 20)
+        sx1, sy1 = max(0, x - pad_x), max(0, y - pad_y)
+        sx2, sy2 = min(frame.shape[1], x + w + pad_x), min(frame.shape[0], y + h + pad_y)
+        search = gray[sy1:sy2, sx1:sx2]
+        if search.shape[0] < h or search.shape[1] < w:
+            return False, self.bbox
+        result = cv2.matchTemplate(search, self.template, cv2.TM_CCOEFF_NORMED)
+        _, score, _, loc = cv2.minMaxLoc(result)
+        self.bbox = sanitize_label_bbox((sx1 + loc[0], sy1 + loc[1], w, h), frame.shape[1], frame.shape[0])
+        return score >= self.min_score, self.bbox
+
+
+class MultiTemplateTracker:
+    """以 CSRT 为主跟踪，多个参考模板仅用于 CSRT 丢失后的恢复。"""
+    def __init__(self, search_scale: float = 2.5, min_score: float = 0.55):
+        self.search_scale = search_scale
+        self.min_score = min_score
+        self.samples: list[tuple[Any, int, int]] = []
+        self.bbox: Optional[tuple[int, int, int, int]] = None
+        self.primary = None
+
+    def _reset_primary(self, frame, bbox: tuple[int, int, int, int]) -> None:
+        self.primary = make_label_cv_tracker("csrt")
+        if self.primary is not None and not init_label_tracker(self.primary, frame, bbox):
+            self.primary = None
+
+    def init(self, frame, bbox: tuple[int, int, int, int]) -> bool:
+        if make_label_cv_tracker("csrt") is None:
+            raise RuntimeError("Multi-template 需要 OpenCV CSRT；请安装 opencv-contrib-python 后重启标注工具。")
+        self.samples = []
+        self.bbox = None
+        self.primary = None
+        return self.add_sample(frame, bbox)
+
+    def add_sample(self, frame, bbox: tuple[int, int, int, int]) -> bool:
+        x, y, w, h = sanitize_label_bbox(bbox, frame.shape[1], frame.shape[0])
+        if w <= 2 or h <= 2:
+            return False
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        self.samples.append((gray[y:y + h, x:x + w].copy(), w, h))
+        self.bbox = (x, y, w, h)
+        self._reset_primary(frame, self.bbox)
+        return True
+
+    def _recover_from_templates(self, frame):
+        if self.bbox is None:
+            return False, (0, 0, 0, 0)
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        x, y, w, h = self.bbox
+        pad_x, pad_y = max(int(w * self.search_scale), 20), max(int(h * self.search_scale), 20)
+        sx1, sy1 = max(0, x - pad_x), max(0, y - pad_y)
+        sx2, sy2 = min(frame.shape[1], x + w + pad_x), min(frame.shape[0], y + h + pad_y)
+        search = gray[sy1:sy2, sx1:sx2]
+        best_score, best_bbox = -1.0, self.bbox
+        for template, sample_w, sample_h in self.samples:
+            if search.shape[0] < sample_h or search.shape[1] < sample_w:
+                continue
+            result = cv2.matchTemplate(search, template, cv2.TM_CCOEFF_NORMED)
+            _, score, _, loc = cv2.minMaxLoc(result)
+            if score > best_score:
+                best_score = score
+                best_bbox = sanitize_label_bbox((sx1 + loc[0], sy1 + loc[1], sample_w, sample_h), frame.shape[1], frame.shape[0])
+        if best_score < self.min_score:
+            return False, self.bbox
+        self.bbox = best_bbox
+        self._reset_primary(frame, self.bbox)
+        return True, self.bbox
+
+    def update(self, frame):
+        if not self.samples or self.bbox is None:
+            return False, (0, 0, 0, 0)
+        if self.primary is not None:
+            ok, bbox = self.primary.update(frame)
+            if ok:
+                self.bbox = sanitize_label_bbox(bbox, frame.shape[1], frame.shape[0])
+                return True, self.bbox
+        return self._recover_from_templates(frame)
+
+
+def sanitize_label_bbox(bbox, width: int, height: int) -> tuple[int, int, int, int]:
+    x, y, w, h = [int(round(value)) for value in bbox]
+    x, y = max(0, min(x, width - 1)), max(0, min(y, height - 1))
+    return x, y, max(1, min(w, width - x)), max(1, min(h, height - y))
+
+
+def make_label_cv_tracker(name: str):
+    upper = name.upper()
+    candidates = []
+    if hasattr(cv2, "legacy"):
+        candidates.append((cv2.legacy, f"Tracker{upper}_create"))
+    candidates.append((cv2, f"Tracker{upper}_create"))
+    for module, factory in candidates:
+        if hasattr(module, factory):
+            return getattr(module, factory)()
+    return None
+
+
+def make_label_tracker(name: str):
+    normalized = name.lower()
+    if normalized == "template":
+        return TemplateTracker()
+    if normalized == "multi_template":
+        return MultiTemplateTracker()
+    tracker = make_label_cv_tracker(name)
+    if tracker is not None:
+        return tracker
+    append_log(f"[网页标注] 跟踪器 {name} 不可用，已回退到 Template。\n")
+    return TemplateTracker()
+
+
+def init_label_tracker(tracker, frame, bbox: tuple[int, int, int, int]) -> bool:
+    result = tracker.init(frame, bbox)
+    return True if result is None else bool(result)
+
+
+def label_object_data(obj: LabelTrackObject) -> dict[str, Any]:
+    x, y, w, h = obj.bbox
+    return {
+        "id": obj.obj_id, "label": obj.label, "x": x, "y": y, "w": w, "h": h,
+        "ok": obj.ok, "sample_count": obj.sample_count,
+    }
+
+
+LABEL_SESSIONS: dict[str, dict[str, Any]] = {}
+LABEL_SESSIONS_LOCK = threading.RLock()
+
+
+MAX_LOG_LINES = 3000
+MAX_LABEL_VIDEOS = 2000
+MAX_VIDEO_PREVIEW_WIDTH = 560
+VIDEO_PREVIEW_CACHE_LIMIT = 80
+VIDEO_PREVIEW_CACHE: OrderedDict[tuple[str, int, int], bytes] = OrderedDict()
+VIDEO_MIME_TYPES = {
+    ".avi": "video/x-msvideo",
+    ".mkv": "video/x-matroska",
+    ".mov": "video/quicktime",
+    ".mp4": "video/mp4",
+    ".m4v": "video/mp4",
+    ".webm": "video/webm",
+    ".wmv": "video/x-ms-wmv",
+    ".flv": "video/x-flv",
+    ".mpg": "video/mpeg",
+    ".mpeg": "video/mpeg",
+}
+
+
+
+
+
+def as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def clean_values(values: Optional[dict[str, Any]]) -> dict[str, Any]:
+
+    merged = DEFAULT_VALUES.copy()
+    if values:
+        source = values.copy()
+        legacy_img_size = source.get("img_size")
+        if legacy_img_size is not None:
+            source.setdefault("img_width", legacy_img_size)
+            source.setdefault("img_height", legacy_img_size)
+        for key in merged:
+            if key in source:
+                merged[key] = as_bool(source[key]) if isinstance(DEFAULT_VALUES[key], bool) else str(source[key])
+    return merged
+
+
+def load_user_defaults() -> dict[str, Any]:
+    if not USER_DEFAULTS_FILE.is_file():
+        return DEFAULT_VALUES.copy()
+    try:
+        data = json.loads(USER_DEFAULTS_FILE.read_text(encoding="utf-8"))
+    except Exception as exc:
+        print(f"无法读取默认配置 {USER_DEFAULTS_FILE}: {exc}", file=sys.stderr)
+        return DEFAULT_VALUES.copy()
+    return clean_values(data if isinstance(data, dict) else None)
+
+
+def save_user_defaults(values: dict[str, Any]) -> dict[str, Any]:
+    defaults = clean_values(values)
+    tmp_path = USER_DEFAULTS_FILE.with_suffix(USER_DEFAULTS_FILE.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(defaults, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp_path.replace(USER_DEFAULTS_FILE)
+    return defaults
+
+
+def quote_cmd(cmd: list[Any]) -> str:
+    return subprocess.list2cmdline([str(x) for x in cmd])
+
+
+def subprocess_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUNBUFFERED"] = "1"
+    env["NO_COLOR"] = "1"
+    python_bin = str(Path(sys.executable).resolve().parent)
+    current_path = env.get("PATH") or env.get("Path") or ""
+    path_parts = [part for part in current_path.split(os.pathsep) if part]
+    if python_bin.lower() not in {part.lower() for part in path_parts}:
+        env["PATH"] = os.pathsep.join([python_bin, *path_parts])
+    return env
+
+
+def subprocess_creationflags() -> int:
+    if os.name == "nt":
+        return subprocess.CREATE_NEW_PROCESS_GROUP
+    return 0
+
+
+def terminate_process_tree(proc: subprocess.Popen[Any], timeout: float = 3.0) -> None:
+    if proc.poll() is not None:
+        return
+
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    else:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        except Exception:
+            proc.terminate()
+
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        if os.name == "nt":
+            proc.kill()
+        else:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except Exception:
+                proc.kill()
+
+
+def ps_single_quote(value: Any) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def remote_train_stop_cmd(values: dict[str, Any], markers: dict[str, Any], export_only: bool = False) -> Optional[list[str]]:
+    job_name = str(markers.get("remote_job_name") or "").strip()
+    if not job_name:
+        return None
+    user = str(values.get("remote_train_user") or "").strip()
+    host = str(values.get("remote_train_host") or "").strip()
+    if not user or not host:
+        return None
+
+    port = str(values.get("remote_train_port") or "22").strip() or "22"
+    ssh_cmd = ["ssh"]
+    if port != "22":
+        ssh_cmd += ["-p", port]
+
+    filters = "$_.CommandLine -and $_.CommandLine.Contains($needle) -and $_.ProcessId -ne $current"
+    if export_only:
+        filters += " -and ($_.CommandLine.Contains(' detect train') -or $_.CommandLine.Contains('detect train') -or $_.CommandLine.Contains('ultralytics'))"
+    ps_command = (
+        f"$needle={ps_single_quote(job_name)}; "
+        "$current=$PID; "
+        "Get-CimInstance Win32_Process | "
+        f"Where-Object {{ {filters} }} | "
+        "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+    )
+    return ssh_cmd + [f"{user}@{host}", f"powershell -NoProfile -ExecutionPolicy Bypass -Command \"{ps_command}\""]
+
+
+
+def stop_remote_training(values: dict[str, Any], markers: dict[str, Any], export_only: bool = False) -> None:
+    cmd = remote_train_stop_cmd(values, markers, export_only=export_only)
+    if not cmd:
+        return
+    append_log("[remote stop and export requested]\n" if export_only else "[remote stop requested]\n")
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=str(SCRIPT_ROOT),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=15,
+            check=False,
+            env=subprocess_env(),
+            creationflags=subprocess_creationflags(),
+        )
+        output = decode_process_output(result.stdout or b"")
+        if output.strip():
+            append_log(output if output.endswith("\n") else output + "\n")
+        append_log(f"[remote stop exit code {result.returncode}]\n")
+    except Exception as exc:
+        append_log(f"[remote stop error] {exc}\n")
+
+
+
+def decode_process_output(raw: bytes) -> str:
+    encodings = ["utf-8", locale.getpreferredencoding(False), "gb18030"]
+    tried: set[str] = set()
+
+    for encoding in encodings:
+        normalized = (encoding or "").lower()
+        if not normalized or normalized in tried:
+            continue
+        tried.add(normalized)
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            pass
+    return raw.decode("utf-8", errors="replace")
+
+
+def append_log(text: str) -> None:
+    text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text).replace("\r", "\n")
+    with STATE_LOCK:
+        STATE["logs"].append(text)
+        if len(STATE["logs"]) > MAX_LOG_LINES:
+            STATE["logs"] = STATE["logs"][-MAX_LOG_LINES:]
+    try:
+        LATEST_JOB_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with LATEST_JOB_LOG_FILE.open("a", encoding="utf-8") as log_file:
+            log_file.write(text)
+    except OSError:
+        pass
+
+
+def strip_ansi(text: str) -> str:
+    text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
+    return text.replace("\r", "").strip()
+
+
+def parse_float(value: str) -> Optional[float]:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_int(value: str) -> Optional[int]:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def format_gib(value: float) -> str:
+    if value <= 0:
+        return "0 GB"
+    return f"{value:.1f} GB" if value < 100 else f"{value:.0f} GB"
+
+
+MODEL_RESOURCE_PROFILES: dict[str, dict[str, float]] = {
+    "n": {"base_vram": 0.80, "per_image_vram": 0.025, "base_ram": 1.70},
+    "s": {"base_vram": 1.10, "per_image_vram": 0.045, "base_ram": 1.95},
+    "m": {"base_vram": 1.60, "per_image_vram": 0.080, "base_ram": 2.35},
+    "l": {"base_vram": 2.20, "per_image_vram": 0.130, "base_ram": 2.90},
+    "x": {"base_vram": 3.00, "per_image_vram": 0.190, "base_ram": 3.60},
+}
+MAX_IMAGE_SIZE_SAMPLES = 300
+LOCAL_RESOURCE_CACHE: dict[str, Any] = {"updated_at": 0.0, "data": None}
+
+
+def infer_model_size(base_model: str) -> str:
+
+    name = Path(str(base_model or "")).name.lower()
+    match = re.search(r"yolo(?:v?\d+)?([nslmx])(?:[._-]|$)", name)
+    if match:
+        return match.group(1)
+    match = re.search(r"(?:^|[._-])([nslmx])(?:[._-]|$)", name)
+    return match.group(1) if match else "n"
+
+
+def read_image_size(path: Path) -> Optional[tuple[int, int]]:
+    try:
+        with path.open("rb") as fh:
+            head = fh.read(32)
+            if head.startswith(b"\x89PNG\r\n\x1a\n") and len(head) >= 24:
+                return struct.unpack(">II", head[16:24])
+            if head.startswith(b"BM") and len(head) >= 26:
+                return struct.unpack("<II", head[18:26])
+            if head.startswith(b"RIFF") and head[8:12] == b"WEBP":
+                if head[12:16] == b"VP8X" and len(head) >= 30:
+                    return (int.from_bytes(head[24:27], "little") + 1, int.from_bytes(head[27:30], "little") + 1)
+                if head[12:16] == b"VP8L" and len(head) >= 25:
+                    b0, b1, b2, b3 = head[21:25]
+                    width = 1 + (((b1 & 0x3F) << 8) | b0)
+                    height = 1 + (((b3 & 0x0F) << 10) | (b2 << 2) | ((b1 & 0xC0) >> 6))
+                    return width, height
+            if head.startswith(b"\xff\xd8"):
+                fh.seek(2)
+                while True:
+                    marker = fh.read(2)
+                    if len(marker) < 2:
+                        return None
+                    while marker[0] != 0xFF:
+                        marker = marker[1:] + fh.read(1)
+                        if len(marker) < 2:
+                            return None
+                    code = marker[1]
+                    if code in {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}:
+                        data = fh.read(7)
+                        if len(data) < 7:
+                            return None
+                        return struct.unpack(">HH", data[3:7])[::-1]
+                    if code in {0xD8, 0xD9, 0x01} or 0xD0 <= code <= 0xD7:
+                        continue
+                    size_data = fh.read(2)
+                    if len(size_data) < 2:
+                        return None
+                    segment_size = struct.unpack(">H", size_data)[0]
+                    if segment_size < 2:
+                        return None
+                    fh.seek(segment_size - 2, 1)
+    except OSError:
+        return None
+    return None
+
+
+def split_class_names(raw: Any) -> list[str]:
+    return [item.strip() for item in re.split(r"[\r\n,;，；]+", str(raw or "")) if item.strip()]
+
+
+def direct_files_with_extensions(directory: Path, extensions: set[str]) -> list[Path]:
+    if not directory.is_dir():
+        return []
+    return sorted(
+        (path for path in directory.iterdir() if path.is_file() and path.suffix.lower() in extensions),
+        key=lambda path: path.name.lower(),
+    )
+
+
+def choose_dataset_directory(root: Path, explicit: str, candidates: tuple[str, ...], extensions: set[str]) -> Path:
+    explicit = str(explicit or "").strip()
+    if explicit:
+        directory = Path(explicit).expanduser().resolve()
+        if directory.is_dir():
+            return directory
+    for name in candidates:
+        directory = root / name if name else root
+        if direct_files_with_extensions(directory, extensions):
+            return directory.resolve()
+    return (root / candidates[0]).resolve()
+
+
+def _dataset_names(data: dict[str, Any]) -> list[str]:
+    raw_names = data.get("names", [])
+    if isinstance(raw_names, dict):
+        def sort_key(item: tuple[Any, Any]) -> tuple[int, str]:
+            key = str(item[0])
+            return (int(key), "") if key.isdigit() else (10**9, key)
+        return [str(value) for _, value in sorted(raw_names.items(), key=sort_key)]
+    if isinstance(raw_names, (list, tuple)):
+        return [str(value) for value in raw_names]
+    return []
+
+
+def _resolve_yolo_split(root: Path, yaml_path: Path, split: str, raw_value: Any) -> Optional[Path]:
+    if isinstance(raw_value, (list, tuple)):
+        raw_value = raw_value[0] if raw_value else ""
+    text = str(raw_value or "").strip().replace("\\", "/")
+    candidates: list[Path] = []
+    if text:
+        raw_path = Path(text).expanduser()
+        if raw_path.is_absolute():
+            candidates.append(raw_path)
+        else:
+            candidates.extend((yaml_path.parent / raw_path, root / raw_path))
+            trimmed = re.sub(r"^(\.\./)+", "", text)
+            if trimmed != text:
+                candidates.append(root / trimmed)
+    aliases = ("valid", "val") if split == "val" else (split,)
+    for alias in aliases:
+        candidates.extend((root / alias / "images", root / "images" / alias))
+    seen: set[str] = set()
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        key = os.path.normcase(str(resolved))
+        if key not in seen and resolved.is_dir():
+            return resolved
+        seen.add(key)
+    return None
+
+
+def inspect_prepared_yolo_dataset(source: Any) -> dict[str, Any]:
+    source_text = str(source or "").strip()
+    if not source_text:
+        raise ValueError("请先选择下载的数据集最外层目录。")
+    source_path = Path(source_text).expanduser().resolve()
+    if source_path.is_file():
+        yaml_path = source_path
+        root = yaml_path.parent
+    else:
+        root = source_path
+        if not root.is_dir():
+            raise ValueError(f"数据集目录不存在：{root}")
+        yaml_path = next((path for path in (root / "data.yaml", root / "dataset.yaml", root / "data.yml") if path.is_file()), None)
+        if yaml_path is None:
+            raise ValueError("没有在最外层找到 data.yaml 或 dataset.yaml。")
+    try:
+        data = yaml.safe_load(yaml_path.read_text(encoding="utf-8-sig")) or {}
+    except Exception as exc:
+        raise ValueError(f"无法读取数据集 YAML：{exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError("data.yaml 内容不是有效的 YOLO 数据集配置。")
+
+    names = _dataset_names(data)
+    split_info: dict[str, dict[str, Any]] = {}
+    class_ids: set[int] = set()
+    total_boxes = 0
+    total_invalid = 0
+    for split in ("train", "val", "test"):
+        images_dir = _resolve_yolo_split(root, yaml_path, split, data.get(split))
+        if images_dir is None:
+            if split == "test":
+                continue
+            raise ValueError(f"无法找到 {split} 图片目录，请检查 data.yaml 和目录布局。")
+        labels_dir = images_dir.parent / "labels" if images_dir.name.lower() == "images" else root / split / "labels"
+        if not labels_dir.is_dir() and split == "val":
+            labels_dir = root / "valid" / "labels"
+        if not labels_dir.is_dir():
+            raise ValueError(f"无法找到 {split} 标签目录：{labels_dir}")
+        images = sorted(path for path in images_dir.rglob("*") if path.is_file() and path.suffix.lower() in TRAIN_IMAGE_EXTENSIONS)
+        labels = sorted(path for path in labels_dir.rglob("*.txt") if path.is_file())
+        image_stems = {path.relative_to(images_dir).with_suffix("").as_posix().casefold() for path in images}
+        label_stems = {path.relative_to(labels_dir).with_suffix("").as_posix().casefold() for path in labels}
+        boxes = 0
+        invalid = 0
+        for label_path in labels:
+            for line in label_path.read_text(encoding="utf-8-sig", errors="replace").splitlines():
+                parts = line.split()
+                if not parts:
+                    continue
+                try:
+                    class_id = int(parts[0])
+                    coords = [float(value) for value in parts[1:]]
+                    if len(coords) not in {4, 8} or class_id < 0 or not all(0.0 <= value <= 1.0 for value in coords):
+                        raise ValueError
+                except ValueError:
+                    invalid += 1
+                    continue
+                class_ids.add(class_id)
+                boxes += 1
+        split_info[split] = {
+            "images_dir": str(images_dir), "labels_dir": str(labels_dir),
+            "image_count": len(images), "label_count": len(labels),
+            "matched_count": len(image_stems & label_stems),
+            "images_without_labels": len(image_stems - label_stems),
+            "labels_without_images": len(label_stems - image_stems),
+            "box_count": boxes, "invalid_lines": invalid,
+        }
+        total_boxes += boxes
+        total_invalid += invalid
+    if not names and class_ids:
+        names = [f"class_{index}" for index in range(max(class_ids) + 1)]
+    if not names:
+        raise ValueError("data.yaml 中没有类别名称，标签中也没有可识别类别。")
+    if max(class_ids, default=-1) >= len(names):
+        raise ValueError("TXT 标签中的类别编号超出了 data.yaml 的 names 范围。")
+    for required in ("train", "val"):
+        current = split_info[required]
+        if current["image_count"] == 0 or current["matched_count"] == 0:
+            raise ValueError(f"{required} 集没有找到可用的图片/TXT 标签对。")
+    return {
+        "format": "yolo-split", "root": str(root), "yaml_path": str(yaml_path),
+        "class_names": names, "splits": split_info,
+        "image_count": sum(item["image_count"] for item in split_info.values()),
+        "label_count": sum(item["label_count"] for item in split_info.values()),
+        "matched_count": sum(item["matched_count"] for item in split_info.values()),
+        "box_count": total_boxes, "invalid_lines": total_invalid,
+        "images_without_labels": sum(item["images_without_labels"] for item in split_info.values()),
+        "labels_without_images": sum(item["labels_without_images"] for item in split_info.values()),
+        "images_dir": split_info["train"]["images_dir"],
+        "labels_dir": split_info["train"]["labels_dir"],
+        "output_dir": str(root),
+    }
+
+
+def inspect_yolo_txt_dataset(values: dict[str, Any]) -> dict[str, Any]:
+    root_text = str(values.get("raw_dataset_root", "")).strip()
+    if not root_text:
+        raise ValueError("请先选择原始数据集根目录。")
+    root = Path(root_text).expanduser().resolve()
+    if not root.is_dir():
+        raise ValueError(f"原始数据集目录不存在：{root}")
+    if any((root / name).is_file() for name in ("data.yaml", "dataset.yaml", "data.yml")):
+        return inspect_prepared_yolo_dataset(root)
+
+    images_dir = choose_dataset_directory(
+        root,
+        values.get("raw_images_dir", ""),
+        ("Main", "images", "Images", "JPEGImages", ""),
+        TRAIN_IMAGE_EXTENSIONS,
+    )
+    labels_dir = choose_dataset_directory(
+        root,
+        values.get("raw_labels_dir", ""),
+        ("Main_labels", "labels", "Labels", "annotations", ""),
+        {".txt"},
+    )
+    images = direct_files_with_extensions(images_dir, TRAIN_IMAGE_EXTENSIONS)
+    labels = direct_files_with_extensions(labels_dir, {".txt"})
+    if not images:
+        raise ValueError(f"没有在图片目录找到支持的图片：{images_dir}")
+    if not labels:
+        raise ValueError(f"没有在标签目录找到 YOLO TXT 标注：{labels_dir}")
+
+    image_by_stem: dict[str, Path] = {}
+    label_by_stem: dict[str, Path] = {}
+    duplicate_stems: set[str] = set()
+    for path in images:
+        key = path.stem.casefold()
+        if key in image_by_stem:
+            duplicate_stems.add(path.stem)
+        image_by_stem[key] = path
+    for path in labels:
+        key = path.stem.casefold()
+        if key in label_by_stem:
+            duplicate_stems.add(path.stem)
+        label_by_stem[key] = path
+
+    matched_keys = sorted(image_by_stem.keys() & label_by_stem.keys())
+    class_ids: set[int] = set()
+    box_count = 0
+    invalid_lines = 0
+    empty_labels = 0
+    for key in matched_keys:
+        valid_in_file = 0
+        for line in label_by_stem[key].read_text(encoding="utf-8-sig", errors="replace").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split()
+            try:
+                if len(parts) != 5:
+                    raise ValueError
+                class_id = int(parts[0])
+                coords = [float(value) for value in parts[1:]]
+                if class_id < 0 or not all(0.0 <= value <= 1.0 for value in coords):
+                    raise ValueError
+            except ValueError:
+                invalid_lines += 1
+                continue
+            class_ids.add(class_id)
+            box_count += 1
+            valid_in_file += 1
+        if valid_in_file == 0:
+            empty_labels += 1
+
+    max_class_id = max(class_ids, default=-1)
+    configured_names = split_class_names(values.get("raw_class_names", ""))
+    class_names = [
+        configured_names[index] if index < len(configured_names) else f"class_{index}"
+        for index in range(max_class_id + 1)
+    ]
+    output_text = str(values.get("raw_output_dir", "")).strip()
+    output_dir = Path(output_text).expanduser().resolve() if output_text else (root / "converted_voc").resolve()
+    return {
+        "root": str(root),
+        "images_dir": str(images_dir),
+        "labels_dir": str(labels_dir),
+        "output_dir": str(output_dir),
+        "image_count": len(images),
+        "label_count": len(labels),
+        "matched_count": len(matched_keys),
+        "images_without_labels": len(image_by_stem.keys() - label_by_stem.keys()),
+        "labels_without_images": len(label_by_stem.keys() - image_by_stem.keys()),
+        "empty_labels": empty_labels,
+        "box_count": box_count,
+        "invalid_lines": invalid_lines,
+        "class_ids": sorted(class_ids),
+        "class_names": class_names,
+        "duplicate_stems": sorted(duplicate_stems),
+    }
+
+
+def convert_yolo_txt_to_voc(values: dict[str, Any]) -> dict[str, Any]:
+    info = inspect_yolo_txt_dataset(values)
+    if info.get("format") == "yolo-split":
+        raise ValueError("这个数据集已经是可训练的 YOLO 格式，请点击“直接导入”，无需转换 XML。")
+    if info["duplicate_stems"]:
+        raise ValueError("存在重名图片或标注，无法安全转换：" + "、".join(info["duplicate_stems"][:8]))
+    if info["matched_count"] == 0:
+        raise ValueError("没有找到同名的图片和 TXT 标注。")
+    if not info["class_ids"]:
+        raise ValueError("没有找到有效的 YOLO 检测框。")
+
+    images_dir = Path(info["images_dir"])
+    labels_dir = Path(info["labels_dir"])
+    output_root = Path(info["output_dir"])
+    output_images = output_root / "images"
+    output_annotations = output_root / "annotations"
+    source_resolved = {images_dir.resolve(), labels_dir.resolve()}
+    if output_root.resolve() in source_resolved or output_images.resolve() in source_resolved or output_annotations.resolve() in source_resolved:
+        raise ValueError("输出目录不能覆盖原始图片或标签目录。")
+
+    configured_names = split_class_names(values.get("raw_class_names", ""))
+    max_class_id = max(info["class_ids"])
+    class_names = [
+        configured_names[index] if index < len(configured_names) else f"class_{index}"
+        for index in range(max_class_id + 1)
+    ]
+    overwrite = as_bool(values.get("raw_overwrite", False))
+    output_images.mkdir(parents=True, exist_ok=True)
+    output_annotations.mkdir(parents=True, exist_ok=True)
+
+    images = direct_files_with_extensions(images_dir, TRAIN_IMAGE_EXTENSIONS)
+    labels_by_stem = {
+        path.stem.casefold(): path
+        for path in direct_files_with_extensions(labels_dir, {".txt"})
+    }
+    converted = 0
+    boxes_written = 0
+    skipped_existing = 0
+    invalid_lines = 0
+    unreadable_images: list[str] = []
+    for image_path in images:
+        label_path = labels_by_stem.get(image_path.stem.casefold())
+        if label_path is None:
+            continue
+        size = read_image_size(image_path)
+        if not size:
+            unreadable_images.append(image_path.name)
+            continue
+        width, height = size
+        destination_image = output_images / image_path.name
+        xml_path = output_annotations / f"{image_path.stem}.xml"
+        if xml_path.exists() and destination_image.exists() and not overwrite:
+            skipped_existing += 1
+            continue
+
+        root = ET.Element("annotation")
+        ET.SubElement(root, "folder").text = output_images.name
+        ET.SubElement(root, "filename").text = image_path.name
+        ET.SubElement(root, "path").text = str(destination_image)
+        source = ET.SubElement(root, "source")
+        ET.SubElement(source, "database").text = "YOLO TXT conversion"
+        size_node = ET.SubElement(root, "size")
+        ET.SubElement(size_node, "width").text = str(width)
+        ET.SubElement(size_node, "height").text = str(height)
+        ET.SubElement(size_node, "depth").text = "3"
+        ET.SubElement(root, "segmented").text = "0"
+
+        file_boxes = 0
+        for line_no, line in enumerate(label_path.read_text(encoding="utf-8-sig", errors="replace").splitlines(), 1):
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split()
+            try:
+                if len(parts) != 5:
+                    raise ValueError
+                class_id = int(parts[0])
+                xc, yc, bw, bh = (float(value) for value in parts[1:])
+                if class_id < 0 or class_id >= len(class_names):
+                    raise ValueError
+                if not all(0.0 <= value <= 1.0 for value in (xc, yc, bw, bh)) or bw <= 0 or bh <= 0:
+                    raise ValueError
+            except ValueError:
+                invalid_lines += 1
+                continue
+            xmin = max(0, min(width - 1, int(round((xc - bw / 2) * width))))
+            ymin = max(0, min(height - 1, int(round((yc - bh / 2) * height))))
+            xmax = max(xmin + 1, min(width, int(round((xc + bw / 2) * width))))
+            ymax = max(ymin + 1, min(height, int(round((yc + bh / 2) * height))))
+            obj = ET.SubElement(root, "object")
+            ET.SubElement(obj, "name").text = class_names[class_id]
+            ET.SubElement(obj, "pose").text = "Unspecified"
+            ET.SubElement(obj, "truncated").text = "0"
+            ET.SubElement(obj, "difficult").text = "0"
+            box = ET.SubElement(obj, "bndbox")
+            ET.SubElement(box, "xmin").text = str(xmin)
+            ET.SubElement(box, "ymin").text = str(ymin)
+            ET.SubElement(box, "xmax").text = str(xmax)
+            ET.SubElement(box, "ymax").text = str(ymax)
+            file_boxes += 1
+
+        if file_boxes == 0:
+            continue
+        if overwrite or not destination_image.exists():
+            shutil.copy2(image_path, destination_image)
+        tree = ET.ElementTree(root)
+        ET.indent(tree, space="  ")
+        tree.write(xml_path, encoding="UTF-8", xml_declaration=True)
+        converted += 1
+        boxes_written += file_boxes
+
+    (output_root / "classes.txt").write_text("\n".join(class_names) + "\n", encoding="utf-8")
+    return {
+        **info,
+        "output_dir": str(output_root),
+        "output_images_dir": str(output_images),
+        "output_annotations_dir": str(output_annotations),
+        "class_names": class_names,
+        "converted_count": converted,
+        "boxes_written": boxes_written,
+        "skipped_existing": skipped_existing,
+        "invalid_lines": invalid_lines,
+        "unreadable_images": unreadable_images,
+    }
+
+
+def empty_local_resources() -> dict[str, Any]:
+    return {"ram_total_gib": None, "ram_available_gib": None, "gpu_name": "", "gpu_total_gib": None, "gpu_free_gib": None}
+
+
+def query_local_resources(cache_seconds: float = 5.0) -> dict[str, Any]:
+    now = time.time()
+    cached = LOCAL_RESOURCE_CACHE.get("data")
+    if isinstance(cached, dict) and now - float(LOCAL_RESOURCE_CACHE.get("updated_at") or 0.0) < cache_seconds:
+        return cached.copy()
+
+    resources = empty_local_resources()
+    try:
+        import psutil  # type: ignore
+
+        mem = psutil.virtual_memory()
+        resources["ram_total_gib"] = mem.total / (1024 ** 3)
+        resources["ram_available_gib"] = mem.available / (1024 ** 3)
+    except Exception:
+        pass
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name,memory.total,memory.free", "--format=csv,noheader,nounits"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        lines = (result.stdout or "").strip().splitlines()
+        if lines:
+            parts = [p.strip() for p in lines[0].split(",")]
+            if len(parts) >= 3:
+                resources["gpu_name"] = parts[0]
+                resources["gpu_total_gib"] = float(parts[1]) / 1024
+                resources["gpu_free_gib"] = float(parts[2]) / 1024
+    except Exception:
+        pass
+    LOCAL_RESOURCE_CACHE["updated_at"] = now
+    LOCAL_RESOURCE_CACHE["data"] = resources.copy()
+    return resources
+
+
+
+def image_dimensions(values: dict[str, Any]) -> tuple[int, int]:
+    width = max(32, parse_int(str(values.get("img_width", ""))) or 448)
+    height = max(32, parse_int(str(values.get("img_height", ""))) or 448)
+    return width, height
+
+
+def estimate_train_resources(values: dict[str, Any]) -> dict[str, Any]:
+    img_width, img_height = image_dimensions(values)
+    img_pixels = img_width * img_height
+    batch = max(1, parse_int(str(values.get("batch", ""))) or 1)
+    cache_mode = str(values.get("train_cache") or "False")
+    train_device = str(values.get("train_device") or "cuda")
+    train_mode = str(values.get("train_mode") or "local")
+    base_model = str(values.get("base_model") or "")
+
+    train_task = str(values.get("train_task") or "detect")
+    model_size = infer_model_size(base_model)
+    profile = MODEL_RESOURCE_PROFILES[model_size]
+    if train_task == "classify":
+        profile = {
+            "base_vram": profile["base_vram"] * 0.65,
+            "per_image_vram": profile["per_image_vram"] * 0.55,
+            "base_ram": profile["base_ram"] * 0.8,
+        }
+    image_count = 0
+    image_bytes = 0
+    sampled_images = 0
+    sampled_pixels = 0
+    images_dir = Path(str(values.get("train_images_dir") or "")).expanduser()
+    if images_dir.is_dir():
+        try:
+            for path in images_dir.rglob("*"):
+                if path.is_file() and path.suffix.lower() in TRAIN_IMAGE_EXTENSIONS:
+                    image_count += 1
+                    try:
+                        image_bytes += path.stat().st_size
+                    except OSError:
+                        pass
+                    if sampled_images < MAX_IMAGE_SIZE_SAMPLES:
+                        size = read_image_size(path)
+                        if size:
+                            width, height = size
+                            if width > 0 and height > 0:
+                                sampled_images += 1
+                                sampled_pixels += width * height
+        except OSError:
+            pass
+
+    img_scale = img_pixels / (640 * 640)
+    avg_pixels = sampled_pixels / sampled_images if sampled_images else img_pixels
+    raw_cache_gib = image_count * avg_pixels * 3 / (1024 ** 3) if image_count else 0.0
+    disk_cache_gib = raw_cache_gib * 1.20
+    cache_ram_gib = raw_cache_gib * 1.15 if cache_mode == "True" else 0.0
+    cache_disk_gib = disk_cache_gib if cache_mode == "disk" else 0.0
+
+    batch_tensor_gib = batch * img_pixels * 3 * 4 / (1024 ** 3)
+    loader_ram_gib = min(4.0, batch_tensor_gib * 2.2 + 0.35)
+    augment_ram_gib = min(3.0, batch_tensor_gib * 1.4 + 0.25)
+    safety_ram_gib = max(0.6, (profile["base_ram"] + loader_ram_gib + augment_ram_gib + cache_ram_gib) * 0.15)
+    train_ram_gib = profile["base_ram"] + loader_ram_gib + augment_ram_gib + safety_ram_gib
+    total_ram_gib = train_ram_gib + cache_ram_gib
+
+    raw_vram_gib = profile["base_vram"] + batch * profile["per_image_vram"] * img_scale
+    train_vram_gib = raw_vram_gib * 1.18 + 0.25 if train_device == "cuda" else 0.0
+
+    local = query_local_resources() if train_mode == "local" else empty_local_resources()
+    risk = "safe"
+    risk_text = "资源预估"
+    if train_device == "cuda" and train_mode == "local" and local.get("gpu_free_gib") is not None:
+
+        free_vram = float(local["gpu_free_gib"])
+        if train_vram_gib > free_vram * 0.95:
+            risk, risk_text = "danger", "显存可能不足"
+        elif train_vram_gib > free_vram * 0.75:
+            risk, risk_text = "warning", "显存接近上限"
+    if train_mode == "local" and local.get("ram_available_gib") is not None:
+
+        free_ram = float(local["ram_available_gib"])
+        if total_ram_gib > free_ram * 0.95:
+            risk, risk_text = "danger", "内存可能不足"
+        elif risk == "safe" and total_ram_gib > free_ram * 0.75:
+            risk, risk_text = "warning", "内存接近上限"
+
+    notes = [
+        f"模型档位={model_size}，显存按 base {profile['base_vram']:.1f}GB + batch*{profile['per_image_vram']:.3f}GB*(imgsz/640)^2 估算。",
+        f"RAM=训练 {format_gib(train_ram_gib)} + cache {format_gib(cache_ram_gib)}。",
+    ]
+    if sampled_images:
+        notes.append(f"cache 按真实图片尺寸采样 {sampled_images}/{image_count} 张估算。")
+    elif not image_count:
+        notes.append("未读取到图片数量，cache 部分按 0 估算。")
+    else:
+        notes.append("未能读取图片尺寸，cache 暂按 ImgSize 估算。")
+    if cache_mode == "True":
+        notes.append("内存 cache 会额外占用 RAM。")
+    elif cache_mode == "disk":
+        notes.append("disk cache 主要额外占用磁盘。")
+    if train_device != "cuda":
+        notes.append("当前选择 CPU 训练，显存按 0 估算。")
+    elif train_mode != "local":
+        notes.append("远程训练模式下只估算训练需求，不检测本机 GPU 余量。")
+    elif local.get("gpu_free_gib") is not None:
+        notes.append(f"当前 GPU 可用约 {format_gib(float(local['gpu_free_gib']))}。")
+
+
+    return {
+        "image_count": image_count,
+        "image_bytes": image_bytes,
+        "sampled_images": sampled_images,
+        "avg_image_mp": round(avg_pixels / 1_000_000, 2) if image_count else 0,
+        "img_size": f"{img_width} × {img_height}",
+        "batch": batch,
+        "base_model": base_model,
+        "model_size": model_size,
+        "train_mode": train_mode,
+        "cache_mode": cache_mode,
+
+        "risk": risk,
+        "risk_text": risk_text,
+        "ram_gib": round(total_ram_gib, 2),
+        "vram_gib": round(train_vram_gib, 2),
+        "train_ram_gib": round(train_ram_gib, 2),
+        "cache_ram_gib": round(cache_ram_gib, 2),
+        "cache_disk_gib": round(cache_disk_gib, 2),
+        "ram_text": format_gib(total_ram_gib),
+        "vram_text": "0 GB" if train_device != "cuda" else format_gib(train_vram_gib),
+        "cache_text": format_gib(cache_ram_gib) if cache_mode == "True" else (format_gib(cache_disk_gib) if cache_mode == "disk" else "0 GB"),
+        "local_resources": local,
+        "note": " ".join(notes),
+    }
+
+
+
+def reset_train_progress_locked() -> None:
+
+    STATE["train_progress"] = {
+        "phase": "idle",
+        "task": "",
+        "epoch": 0,
+        "total_epochs": 0,
+        "batch": 0,
+        "total_batches": 0,
+        "percent": 0.0,
+        "gpu_mem": "",
+        "loss": None,
+        "box_loss": None,
+        "cls_loss": None,
+        "dfl_loss": None,
+        "instances": None,
+        "size": None,
+        "speed": "",
+        "elapsed": "",
+        "eta": "",
+        "val_batch": 0,
+        "val_total": 0,
+        "val_percent": 0.0,
+        "metrics": {},
+        "history": [],
+        "updated_at": "",
+    }
+
+
+def append_epoch_history(progress: dict[str, Any]) -> None:
+    epoch = progress.get("epoch")
+    if not epoch:
+        return
+    history = progress.setdefault("history", [])
+    item = {
+        "epoch": epoch,
+        "loss": progress.get("loss"),
+        "box_loss": progress.get("box_loss"),
+        "cls_loss": progress.get("cls_loss"),
+        "dfl_loss": progress.get("dfl_loss"),
+        "precision": progress.get("metrics", {}).get("precision"),
+        "recall": progress.get("metrics", {}).get("recall"),
+        "map50": progress.get("metrics", {}).get("map50"),
+        "map50_95": progress.get("metrics", {}).get("map50_95"),
+        "top1_acc": progress.get("metrics", {}).get("top1_acc"),
+        "top5_acc": progress.get("metrics", {}).get("top5_acc"),
+    }
+    if history and history[-1].get("epoch") == epoch:
+        history[-1] = item
+    else:
+        history.append(item)
+    if len(history) > 500:
+        del history[:-500]
+
+
+def parse_train_output(line: str) -> None:
+    clean = strip_ansi(line)
+    if not clean:
+        return
+    now = time.strftime("%H:%M:%S")
+    detect_match = re.search(
+        r"(?P<epoch>\d+)\s*/\s*(?P<total_epochs>\d+)\s+(?P<gpu_mem>\S+)\s+"
+        r"(?P<box_loss>[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\s+"
+        r"(?P<cls_loss>[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\s+"
+        r"(?P<dfl_loss>[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\s+"
+        r"(?P<instances>\d+)\s+(?P<size>\d+)\s*:\s*(?P<percent>\d+(?:\.\d+)?)%.*?"
+        r"(?P<batch>\d+)\s*/\s*(?P<total_batches>\d+)"
+        r"(?:\s+(?P<speed>[\d.]+it/s))?(?:\s+(?P<elapsed>[^<\s]+))?(?:<(?P<eta>\S+))?",
+        clean,
+    )
+    if detect_match:
+        data = detect_match.groupdict()
+        with STATE_LOCK:
+            progress = STATE["train_progress"]
+            progress.update({
+                "phase": "train", "task": "detect", "epoch": parse_int(data["epoch"]) or 0,
+                "total_epochs": parse_int(data["total_epochs"]) or 0, "batch": parse_int(data["batch"]) or 0,
+                "total_batches": parse_int(data["total_batches"]) or 0, "percent": parse_float(data["percent"]) or 0.0,
+                "gpu_mem": data.get("gpu_mem") or "", "loss": None, "box_loss": parse_float(data["box_loss"]),
+                "cls_loss": parse_float(data["cls_loss"]), "dfl_loss": parse_float(data["dfl_loss"]),
+                "instances": parse_int(data["instances"]), "size": parse_int(data["size"]),
+                "speed": data.get("speed") or "", "elapsed": data.get("elapsed") or "", "eta": data.get("eta") or "",
+                "updated_at": now,
+            })
+            if progress["percent"] >= 100:
+                append_epoch_history(progress)
+        return
+
+    classify_match = re.search(
+        r"(?P<epoch>\d+)\s*/\s*(?P<total_epochs>\d+)\s+(?P<gpu_mem>\S+)\s+"
+        r"(?P<loss>[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\s+(?P<instances>\d+)\s+(?P<size>\d+)\s*:\s*"
+        r"(?P<percent>\d+(?:\.\d+)?)%.*?(?P<batch>\d+)\s*/\s*(?P<total_batches>\d+)"
+        r"(?:\s+(?P<speed>[\d.]+it/s))?(?:\s+(?P<elapsed>[^<\s]+))?(?:<(?P<eta>\S+))?",
+        clean,
+    )
+    if classify_match:
+        data = classify_match.groupdict()
+        with STATE_LOCK:
+            progress = STATE["train_progress"]
+            progress.update({
+                "phase": "train", "task": "classify", "epoch": parse_int(data["epoch"]) or 0,
+                "total_epochs": parse_int(data["total_epochs"]) or 0, "batch": parse_int(data["batch"]) or 0,
+                "total_batches": parse_int(data["total_batches"]) or 0, "percent": parse_float(data["percent"]) or 0.0,
+                "gpu_mem": data.get("gpu_mem") or "", "loss": parse_float(data["loss"]), "box_loss": None,
+                "cls_loss": None, "dfl_loss": None, "instances": parse_int(data["instances"]),
+                "size": parse_int(data["size"]), "speed": data.get("speed") or "", "elapsed": data.get("elapsed") or "",
+                "eta": data.get("eta") or "", "updated_at": now,
+            })
+            if progress["percent"] >= 100:
+                append_epoch_history(progress)
+        return
+
+    val_match = re.search(r"Class\s+Images\s+Instances.*?:\s*(?P<percent>\d+(?:\.\d+)?)%.*?(?P<batch>\d+)\s*/\s*(?P<total>\d+)", clean)
+    if val_match:
+        data = val_match.groupdict()
+        with STATE_LOCK:
+            STATE["train_progress"].update({"phase": "val", "task": "detect", "val_batch": parse_int(data["batch"]) or 0, "val_total": parse_int(data["total"]) or 0, "val_percent": parse_float(data["percent"]) or 0.0, "updated_at": now})
+        return
+
+    classify_val_match = re.search(r"classes\s+top1_acc\s+top5_acc\s*:\s*(?P<percent>\d+(?:\.\d+)?)%.*?(?P<batch>\d+)\s*/\s*(?P<total>\d+)", clean, re.IGNORECASE)
+    if classify_val_match:
+        data = classify_val_match.groupdict()
+        with STATE_LOCK:
+            STATE["train_progress"].update({"phase": "val", "task": "classify", "val_batch": parse_int(data["batch"]) or 0, "val_total": parse_int(data["total"]) or 0, "val_percent": parse_float(data["percent"]) or 0.0, "updated_at": now})
+        return
+
+    detect_metric_match = re.match(r"^all\s+(?P<images>\d+)\s+(?P<instances>\d+)\s+(?P<precision>[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\s+(?P<recall>[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\s+(?P<map50>[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\s+(?P<map50_95>[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)$", clean)
+    if detect_metric_match:
+        data = detect_metric_match.groupdict()
+        metrics = {"images": parse_int(data["images"]), "instances": parse_int(data["instances"]), "precision": parse_float(data["precision"]), "recall": parse_float(data["recall"]), "map50": parse_float(data["map50"]), "map50_95": parse_float(data["map50_95"])}
+        with STATE_LOCK:
+            progress = STATE["train_progress"]
+            progress.update({"phase": "metrics", "task": "detect", "metrics": metrics, "val_percent": 100.0, "updated_at": now})
+            append_epoch_history(progress)
+        return
+
+    classify_metric_match = re.match(r"^all\s+(?P<top1_acc>[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\s+(?P<top5_acc>[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)$", clean, re.IGNORECASE)
+    if classify_metric_match:
+        data = classify_metric_match.groupdict()
+        metrics = {"top1_acc": parse_float(data["top1_acc"]), "top5_acc": parse_float(data["top5_acc"])}
+        with STATE_LOCK:
+            progress = STATE["train_progress"]
+            progress.update({"phase": "metrics", "task": "classify", "metrics": metrics, "val_percent": 100.0, "updated_at": now})
+            append_epoch_history(progress)
+
+
+
+def parse_marker(line: str) -> None:
+    markers = {
+        "REMOTE_JOB_NAME=": "remote_job_name",
+        "REMOTE_WORK_DIR=": "remote_work_dir",
+        "TRAIN_MODEL_ONNX=": "model_path",
+        "TRAIN_PLOT_DIR=": "train_plot_dir",
+        "TRAIN_CLASSES=": "classes_path",
+        "TRAIN_CALIB_DIR=": "calib_dir",
+        "TRAIN_TEST_IMAGE=": "test_image",
+        "TRAIN_MODEL_PT=": "test_model",
+        "TRAIN_STOP_EXPORT_REQUESTED=": "stop_export",
+        "TEST_OUTPUT_IMAGE=": "test_output_image",
+
+        "CONVERT_FINAL_TAR=": "convert_final_tar",
+        "CONVERT_PACKAGE=": "convert_package",
+        "CONVERT_WORK_DIR=": "convert_work_dir",
+    }
+    with STATE_LOCK:
+        for prefix, key in markers.items():
+            if line.startswith(prefix):
+                value = line[len(prefix):].strip()
+                STATE["markers"][key] = value
+                if key in STATE["values"]:
+                    STATE["values"][key] = value
+                if key == "test_model" and not STATE["values"].get("model_path"):
+                    STATE["values"]["model_path"] = value
+                return
+
+
+def build_common_args(values: dict[str, Any], stage: str) -> list[Any]:
+    return [
+        sys.executable,
+        str(WORKFLOW_SCRIPT),
+        "--stage", stage,
+        "--dataset-root", values["dataset_root"],
+        "--train-task", values["train_task"],
+        "--images-dir", values["train_images_dir"],
+        "--annotations-dir", values["train_annotations_dir"],
+        "--dataset-yaml", values.get("prepared_dataset_yaml", ""),
+        "--train-ratio-percent", values["train_ratio_percent"],
+        "--img-width", values["img_width"],
+        "--img-height", values["img_height"],
+        "--image-resize-mode", values["image_resize_mode"],
+
+        "--epochs", values["epochs"],
+        "--batch", values["batch"],
+        "--workers", values["train_workers"],
+        "--patience", values["patience"],
+        "--lr0", values["lr0"],
+        "--conda-env", values["conda_env"],
+        "--base-model", values["base_model"],
+        "--torch-cuda", values["torch_cuda"],
+        "--train-device", values["train_device"],
+        "--train-cache", values["train_cache"],
+        "--stop-export-signal", str(STOP_EXPORT_SIGNAL_FILE),
+        "--project-name", values["project_name"],
+
+
+        "--model-name", values["model_name"],
+        "--operator-mode", values["operator_mode"],
+        "--train-mode", values["train_mode"],
+        "--remote-train-user", values["remote_train_user"],
+        "--remote-train-host", values["remote_train_host"],
+        "--remote-train-port", values["remote_train_port"],
+        "--remote-train-work-dir", values["remote_train_work_dir"],
+        "--vm-user", values["vm_user"],
+        "--vm-host", values["vm_host"],
+        "--vm-work-dir", values["vm_work_dir"],
+    ]
+
+
+def build_train_cmd(values: dict[str, Any]) -> list[Any]:
+    return build_common_args(values, "train")
+
+
+def build_convert_cmd(values: dict[str, Any]) -> list[Any]:
+    cmd = build_common_args(values, "convert") + [
+        "--model-path", values["model_path"],
+        "--classes-path", values["classes_path"],
+        "--calib-dir", values["calib_dir"],
+        "--test-image", values["test_image"],
+    ]
+    if as_bool(values["skip_vm_convert"]):
+        cmd.append("--skip-vm-convert")
+    return cmd
+
+
+def build_test_cmd(values: dict[str, Any]) -> list[Any]:
+    cmd = [
+        sys.executable,
+        str(TEST_SCRIPT),
+        "--model", values["test_model"],
+        "--source", values["test_source"],
+        "--camera-index", values["camera_index"],
+        "--conf", values["conf"],
+    ]
+    if values["test_source"] == "image":
+        cmd += ["--image", values["test_image_file"]]
+    elif values["test_source"] == "folder":
+        cmd += ["--folder", values["test_image_folder"]]
+        if values["test_output_dir"].strip():
+            cmd += ["--output-dir", values["test_output_dir"]]
+    return cmd
+
+
+def build_label_cmd(values: dict[str, Any]) -> list[Any]:
+    source_type = values.get("label_source_type", "video")
+    cmd = [
+        sys.executable,
+        str(LABEL_SCRIPT),
+        "--labels", values["label_name"],
+        "--interval", values["label_interval"],
+        "--images-dir", values["label_images_dir"],
+        "--annotations-dir", values["label_annotations_dir"],
+        "--prefix", values["label_prefix"],
+        "--tracker", values["label_tracker"],
+        "--start-frame", values["label_start_frame"],
+        "--max-frames", values["label_max_frames"],
+        "--display-scale", values["label_display_scale"],
+        "--jpeg-quality", values["label_jpeg_quality"],
+    ]
+    if source_type == "images":
+        cmd += ["--images-input-dir", values["label_images_input_dir"]]
+    elif source_type == "camera":
+        cmd += ["--video", values["label_camera_index"]]
+    else:
+        cmd += ["--video", values["label_video"]]
+    return cmd
+
+
+
+def command_for(action: str, values: dict[str, Any]) -> list[Any]:
+
+    if action == "train":
+        return build_train_cmd(values)
+    if action == "convert":
+        return build_convert_cmd(values)
+    if action == "test":
+        return build_test_cmd(values)
+    if action == "label":
+        return build_label_cmd(values)
+    if action == "train_ssh":
+
+        return ["ssh", "-p", values["remote_train_port"], f"{values['remote_train_user']}@{values['remote_train_host']}", "hostname"]
+    if action == "vm_ssh":
+        return ["ssh", f"{values['vm_user']}@{values['vm_host']}", "hostname"]
+    raise ValueError(f"unknown action: {action}")
+
+
+def validate(action: str, values: dict[str, Any]) -> None:
+    if action == "train":
+        if not str(values.get("dataset_root", "")).strip():
+            raise ValueError("请先选择训练输出目录。")
+        if not str(values.get("train_images_dir", "")).strip():
+            raise ValueError("请先选择训练图片目录。")
+        dataset = Path(values["dataset_root"])
+        images_dir = Path(values["train_images_dir"])
+        annotations_dir = Path(values["train_annotations_dir"]) if str(values.get("train_annotations_dir", "")).strip() else None
+        prepared_yaml = str(values.get("prepared_dataset_yaml", "")).strip()
+        if not dataset.is_dir():
+            raise ValueError("Dataset Root 必须是有效文件夹，用于保存训练输出。")
+        if not images_dir.is_dir():
+            raise ValueError("Images Dir 必须是有效图片文件夹。")
+        train_task = values.get("train_task", "detect")
+        if train_task not in {"detect", "classify"}:
+            raise ValueError("训练任务必须为目标检测或图像分类。")
+        if train_task == "detect":
+            if prepared_yaml:
+                inspect_prepared_yolo_dataset(prepared_yaml)
+            else:
+                if annotations_dir is None:
+                    raise ValueError("请选择 XML 标注目录，或直接导入带 data.yaml 的 YOLO 数据集。")
+                if not annotations_dir.is_dir():
+                    raise ValueError("目标检测需要有效的 XML 标注文件夹。")
+        if train_task == "classify":
+            class_dirs = [path for path in images_dir.iterdir() if path.is_dir()]
+            if len(class_dirs) < 2:
+                raise ValueError("图像分类的 Images Dir 下至少需要两个类别子文件夹。")
+        train_ratio = parse_float(str(values.get("train_ratio_percent", "")))
+        if train_ratio is None or not 1 <= train_ratio <= 100:
+            raise ValueError("训练集比例必须在 1% 到 100% 之间。")
+        epochs = parse_int(str(values.get("epochs", "")))
+        if epochs is None or epochs < 1:
+            raise ValueError("训练轮数 Epochs 必须是大于等于 1 的整数。")
+        batch = parse_int(str(values.get("batch", "")))
+        if batch is None or batch == 0 or batch < -1:
+            raise ValueError("Batch 必须是正整数，或使用 -1 自动选择。")
+        workers = parse_int(str(values.get("train_workers", "")))
+        if workers is None or not 0 <= workers <= 16:
+            raise ValueError("数据加载进程必须是 0 到 16 的整数；多数电脑建议使用 2 到 4。")
+        patience = parse_int(str(values.get("patience", "")))
+        if patience is None or patience < 0:
+            raise ValueError("早停耐心值必须是大于等于 0 的整数。")
+        lr0 = parse_float(str(values.get("lr0", "")))
+        if lr0 is None or lr0 <= 0:
+            raise ValueError("初始学习率 Lr0 必须是大于 0 的数字。")
+        for key, label in (("img_width", "图片宽度"), ("img_height", "图片高度")):
+            value = parse_int(str(values.get(key, "")))
+            if value is None or value < 32 or value % 32:
+                raise ValueError(f"{label}必须是大于等于 32 的 32 倍数，以兼容 YOLO 和 MaixCAM 转换。")
+        if values.get("image_resize_mode") not in {"crop", "letterbox", "stretch"}:
+            raise ValueError("图片适配方式必须为裁剪、等比缩放或拉伸。")
+        if not WORKFLOW_SCRIPT.exists():
+            raise ValueError(f"未找到 host_train_export.py: {WORKFLOW_SCRIPT}")
+        if values["train_mode"] == "remote-windows" and not values["remote_train_user"].strip():
+            raise ValueError("远程 Windows 训练需要填写 Remote User。")
+    elif action == "convert":
+        if values.get("train_task") == "classify":
+            raise ValueError("当前 MaixCAM 转换流程仅支持目标检测 ONNX，分类模型训练完成后可直接使用 .pt 或 .onnx。")
+        for key, label in (("model_path", "ONNX 模型"), ("classes_path", "classes.txt"), ("calib_dir", "校准图片目录")):
+            if not values[key].strip():
+                raise ValueError(f"{label} 不能为空。")
+    elif action == "test":
+        if not TEST_SCRIPT.exists():
+            raise ValueError(f"未找到 model_test.py: {TEST_SCRIPT}")
+        if not values["test_model"].strip():
+            raise ValueError("测试模型不能为空。")
+        if values["test_source"] == "image" and not values["test_image_file"].strip():
+            raise ValueError("选择单张图片测试时必须填写图片路径。")
+        if values["test_source"] == "folder" and not values["test_image_folder"].strip():
+            raise ValueError("选择图片文件夹测试时必须填写文件夹路径。")
+    elif action == "label":
+        if not LABEL_SCRIPT.exists():
+            raise ValueError(f"未找到 video_track_label.py: {LABEL_SCRIPT}")
+        source_type = values.get("label_source_type", "video")
+        if source_type == "images":
+            image_dir = Path(values.get("label_images_input_dir", "").strip())
+            if not image_dir.is_dir():
+                raise ValueError("图片集文件夹必须是有效文件夹。")
+        elif source_type == "camera":
+            camera_index = values.get("label_camera_index", "").strip()
+            if not camera_index.isdigit():
+                raise ValueError("摄像头索引必须是非负整数，例如 0 或 1。")
+        elif not values["label_video"].strip():
+            raise ValueError("请先从视频队列选择或填写视频路径。")
+        if not values["label_name"].strip():
+            raise ValueError("请先填写至少一个标签名称。")
+    elif action == "train_ssh":
+        if not values["remote_train_user"].strip():
+            raise ValueError("请先填写 Remote User。")
+
+    elif action == "vm_ssh":
+        if not values["vm_user"].strip() or not values["vm_host"].strip():
+            raise ValueError("请先填写 VM User 和 VM Host/IP。")
+
+
+def train_preflight(values: dict[str, Any]) -> dict[str, Any]:
+    checks: list[dict[str, str]] = []
+
+    def add(check_id: str, label: str, status: str, detail: str) -> None:
+        checks.append({"id": check_id, "label": label, "status": status, "detail": detail})
+
+    try:
+        validate("train", values)
+        add("config", "训练参数", "ok", "必填项和数值格式正确")
+    except Exception as exc:
+        add("config", "训练参数", "error", str(exc))
+
+    img_width, img_height = image_dimensions(values)
+    workers = parse_int(str(values.get("train_workers", ""))) or 0
+    if values.get("train_task") == "detect" and img_width != img_height:
+        add("shape", "实际训练张量", "ok", f"{img_width}×{img_height}，自动启用矩形训练；不会再补成正方形")
+        add("amp", "稳定性保护", "ok", "矩形训练自动关闭当前环境中不稳定的半精度；实测吞吐仍高于原配置")
+    else:
+        add("shape", "实际训练张量", "ok", f"{img_width}×{img_height}")
+    if workers == 0:
+        add("loader", "数据加载", "warn", "workers=0 会让 GPU 等待 CPU；RTX 4060 建议设为 4")
+    else:
+        add("loader", "数据加载", "ok", f"{workers} 个数据加载进程")
+    patience = parse_int(str(values.get("patience", ""))) or 0
+    if patience == 0:
+        add("stopping", "停止方式", "ok", "自动早停已关闭，只在你手动点击停止时结束")
+    else:
+        add("stopping", "停止方式", "warn", f"连续 {patience} 轮没有提升会自动停止")
+
+    dataset_root_text = str(values.get("dataset_root", "")).strip()
+    dataset_root = Path(dataset_root_text).resolve() if dataset_root_text else None
+    if dataset_root and dataset_root.is_dir() and os.access(dataset_root, os.W_OK):
+        add("output", "输出目录", "ok", str(dataset_root))
+    elif dataset_root and dataset_root.is_dir():
+        add("output", "输出目录", "error", f"没有写入权限：{dataset_root}")
+    elif dataset_root_text:
+        add("output", "输出目录", "error", f"文件夹不存在：{dataset_root_text}")
+    else:
+        add("output", "输出目录", "error", "尚未选择训练输出目录")
+
+    prepared_yaml = str(values.get("prepared_dataset_yaml", "")).strip()
+    if prepared_yaml and values.get("train_task", "detect") == "detect":
+        try:
+            info = inspect_prepared_yolo_dataset(prepared_yaml)
+            split_parts = []
+            for name, label in (("train", "训练"), ("val", "验证"), ("test", "测试")):
+                if name in info["splits"]:
+                    split_parts.append(f"{label} {info['splits'][name]['matched_count']}")
+            add("dataset", "YOLO 数据集", "ok", f"沿用原划分：{' / '.join(split_parts)}；{len(info['class_names'])} 个类别，无需 XML")
+        except Exception as exc:
+            add("dataset", "YOLO 数据集", "error", str(exc))
+
+    images_dir_text = str(values.get("train_images_dir", "")).strip()
+    images_dir = Path(images_dir_text).resolve() if images_dir_text else None
+    train_task = values.get("train_task", "detect")
+    if images_dir is None or not images_dir.is_dir():
+        detail = f"文件夹不存在：{images_dir_text}" if images_dir_text else "尚未选择训练图片目录"
+        add("dataset", "训练数据", "error", detail)
+    elif train_task == "detect" and not prepared_yaml:
+        annotations_dir_text = str(values.get("train_annotations_dir", "")).strip()
+        annotations_dir = Path(annotations_dir_text).resolve() if annotations_dir_text else None
+        if annotations_dir is None or not annotations_dir.is_dir():
+            detail = f"文件夹不存在：{annotations_dir_text}" if annotations_dir_text else "尚未选择 XML 标注目录"
+            add("dataset", "训练数据", "error", detail)
+            annotations_dir = None
+        image_paths = [
+            path for path in images_dir.rglob("*")
+            if path.is_file() and path.suffix.lower() in TRAIN_IMAGE_EXTENSIONS
+        ]
+        xml_paths = [path for path in annotations_dir.rglob("*.xml") if path.is_file()] if annotations_dir else []
+        image_stems = {path.stem.lower() for path in image_paths}
+        xml_stems = {path.stem.lower() for path in xml_paths}
+        matched = len(image_stems & xml_stems)
+        if annotations_dir is None:
+            pass
+        elif matched == 0:
+            add("dataset", "训练数据", "error", "没有找到同名的图片和 XML 标注")
+        elif matched < 10:
+            add("dataset", "训练数据", "warn", f"找到 {matched} 对图片/XML；可以训练，但建议至少准备几十张")
+        else:
+            unmatched = len(image_stems - xml_stems) + len(xml_stems - image_stems)
+            detail = f"找到 {matched} 对图片/XML"
+            if unmatched:
+                detail += f"，另有 {unmatched} 个未匹配文件会被忽略"
+            add("dataset", "训练数据", "ok", detail)
+    elif train_task == "classify" and images_dir is not None:
+        class_counts = {
+            path.name: sum(
+                1 for item in path.rglob("*")
+                if item.is_file() and item.suffix.lower() in TRAIN_IMAGE_EXTENSIONS
+            )
+            for path in images_dir.iterdir()
+            if path.is_dir()
+        }
+        empty_classes = [name for name, count in class_counts.items() if count < 2]
+        total_images = sum(class_counts.values())
+        if empty_classes:
+            add("dataset", "训练数据", "error", f"这些类别少于 2 张图片：{', '.join(empty_classes)}")
+        elif total_images < 20:
+            add("dataset", "训练数据", "warn", f"{len(class_counts)} 个类别，共 {total_images} 张图片；可以训练，但数据较少")
+        else:
+            add("dataset", "训练数据", "ok", f"{len(class_counts)} 个类别，共 {total_images} 张图片")
+
+    base_model = str(values.get("base_model", "")).strip()
+    model_path = Path(base_model)
+    if not model_path.is_absolute():
+        model_path = SCRIPT_ROOT / model_path
+    if model_path.is_file():
+        add("model", "基础模型", "ok", str(model_path.resolve()))
+    elif re.fullmatch(r"yolo[\w.-]+\.pt", Path(base_model).name, re.IGNORECASE):
+        add("model", "基础模型", "warn", f"{base_model} 尚未下载，首次训练时需要联网")
+    else:
+        add("model", "基础模型", "error", f"找不到模型：{base_model}")
+
+    if values.get("train_mode") == "remote-windows":
+        add("runtime", "训练环境", "warn", "远程模式已选择；请先点击“测试训练 SSH”确认连接")
+    else:
+        missing = [
+            module for module in ("torch", "ultralytics", "onnx", "onnxsim", "onnxslim", "onnxruntime")
+            if importlib.util.find_spec(module) is None
+        ]
+        yolo_exe = Path(sys.executable).parent / ("yolo.exe" if os.name == "nt" else "yolo")
+        if missing:
+            add("runtime", "Python 环境", "error", f"缺少依赖：{', '.join(missing)}")
+        elif not yolo_exe.is_file():
+            add("runtime", "Python 环境", "error", f"找不到 YOLO 命令：{yolo_exe}")
+        else:
+            add("runtime", "Python 环境", "ok", f"Python {sys.version_info.major}.{sys.version_info.minor}，YOLO 命令可用")
+
+        if values.get("train_device") == "cuda":
+            try:
+                import torch
+
+                if torch.cuda.is_available():
+                    gpu_name = torch.cuda.get_device_name(0)
+                    memory_gib = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+                    add("device", "训练设备", "ok", f"{gpu_name}，{memory_gib:.1f} GB 显存")
+                else:
+                    add("device", "训练设备", "error", "当前 PyTorch 无法使用 CUDA；请改用 CPU 或修复 CUDA 环境")
+            except Exception as exc:
+                add("device", "训练设备", "error", f"CUDA 检查失败：{exc}")
+        else:
+            add("device", "训练设备", "warn", "当前选择 CPU，训练速度会明显较慢")
+
+    ready = not any(item["status"] == "error" for item in checks)
+    if ready:
+        warnings = sum(item["status"] == "warn" for item in checks)
+        summary = "训练前检查通过" + (f"，有 {warnings} 项提示" if warnings else "")
+    else:
+        first_error = next(item["detail"] for item in checks if item["status"] == "error")
+        summary = f"暂时不能开始训练：{first_error}"
+    return {"ready": ready, "checks": checks, "summary": summary}
+
+
+def start_job(action: str, values: dict[str, Any]) -> None:
+    global current_proc, stop_requested
+
+    validate(action, values)
+    cmd = command_for(action, values)
+    with STATE_LOCK:
+        if STATE["running"]:
+            raise RuntimeError("已有任务正在运行，请等待完成或先停止。")
+        current_proc = None
+        stop_requested = False
+        STATE["values"] = values.copy()
+        STATE["logs"] = []
+        STATE["running"] = True
+        STATE["job"] = action
+        STATE["exit_code"] = None
+        STATE["started_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        STATE["finished_at"] = None
+        STATE["last_error"] = ""
+        if action == "train":
+            reset_train_progress_locked()
+            STATE["markers"].pop("remote_job_name", None)
+            STATE["markers"].pop("remote_work_dir", None)
+            STATE["markers"].pop("stop_export", None)
+            try:
+                STOP_EXPORT_SIGNAL_FILE.unlink(missing_ok=True)
+            except OSError:
+                pass
+            STATE["train_progress"]["phase"] = "pending"
+            STATE["train_progress"]["updated_at"] = time.strftime("%H:%M:%S")
+
+    try:
+        LATEST_JOB_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        LATEST_JOB_LOG_FILE.write_text(
+            f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] action={action}\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+
+    def worker() -> None:
+        global current_proc, stop_requested
+
+        proc: Optional[subprocess.Popen[Any]] = None
+        append_log("$ " + quote_cmd(cmd) + "\n")
+        try:
+            proc = subprocess.Popen(
+                [str(x) for x in cmd],
+                cwd=str(SCRIPT_ROOT),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                bufsize=0,
+                env=subprocess_env(),
+                creationflags=subprocess_creationflags(),
+                start_new_session=(os.name != "nt"),
+            )
+            with STATE_LOCK:
+                current_proc = proc
+                should_stop = stop_requested
+            if should_stop:
+                terminate_process_tree(proc)
+
+            if proc.stdout is not None:
+                buffer = bytearray()
+                while True:
+                    chunk = proc.stdout.read(1)
+                    if not chunk:
+                        break
+                    buffer.extend(chunk)
+                    if chunk in (b"\n", b"\r"):
+                        line = decode_process_output(bytes(buffer))
+                        buffer.clear()
+                        append_log(line)
+                        parse_marker(line.strip())
+                        if action == "train":
+                            parse_train_output(line)
+                if buffer:
+                    line = decode_process_output(bytes(buffer))
+                    append_log(line)
+                    parse_marker(line.strip())
+                    if action == "train":
+                        parse_train_output(line)
+
+            code = proc.wait()
+
+            with STATE_LOCK:
+                stopped = stop_requested
+                STATE["exit_code"] = code
+            if stopped:
+                append_log(f"\n[stopped, exit code {code}]\n")
+            else:
+                append_log(f"\n[exit code {code}]\n")
+        except Exception as exc:
+            with STATE_LOCK:
+                stopped = stop_requested
+                STATE["exit_code"] = -15 if stopped else -1
+                STATE["last_error"] = "" if stopped else str(exc)
+            if stopped:
+                append_log("\n[stopped]\n")
+            else:
+                append_log(f"\n[error] {exc}\n")
+        finally:
+            with STATE_LOCK:
+                STATE["running"] = False
+                STATE["finished_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                current_proc = None
+                stop_requested = False
+
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
+def stop_train_and_export() -> bool:
+    with STATE_LOCK:
+        if not STATE["running"] or STATE.get("job") != "train":
+            return False
+        values = STATE["values"].copy()
+        markers = STATE["markers"].copy()
+        STATE["markers"]["stop_export"] = "已请求停止训练并导出当前 best 模型"
+        STATE["train_progress"]["phase"] = "export"
+        STATE["train_progress"]["updated_at"] = time.strftime("%H:%M:%S")
+
+    append_log("\n[stop training and export requested]\n")
+    if values.get("train_mode") == "remote-windows":
+        threading.Thread(target=stop_remote_training, args=(values, markers, True), daemon=True).start()
+    else:
+        try:
+            STOP_EXPORT_SIGNAL_FILE.write_text(str(time.time()), encoding="utf-8")
+        except OSError as exc:
+            append_log(f"[stop export signal error] {exc}\n")
+    return True
+
+
+def stop_job() -> bool:
+    global stop_requested
+    with STATE_LOCK:
+        if not STATE["running"]:
+            return False
+        proc = current_proc
+        values = STATE["values"].copy()
+        markers = STATE["markers"].copy()
+        job = STATE["job"]
+        stop_requested = True
+
+    append_log("\n[stop requested]\n")
+    if job == "train" and values.get("train_mode") == "remote-windows":
+        threading.Thread(target=stop_remote_training, args=(values, markers), daemon=True).start()
+    if proc and proc.poll() is None:
+        terminate_process_tree(proc)
+    return True
+
+
+def resolve_under(path: str, base: Path) -> Path:
+
+    target = Path(path).resolve()
+    base = base.resolve()
+    if target != base and base not in target.parents:
+        raise ValueError("路径不在当前打标输出目录内。")
+    return target
+
+
+def parse_label_names(raw: str) -> list[str]:
+    labels = [part.strip() for part in re.split(r"[,;\n]+", raw) if part.strip()]
+    return labels or ["object"]
+
+
+def label_image_files(directory: Path) -> list[Path]:
+    return sorted(
+        (path for path in directory.iterdir() if path.is_file() and path.suffix.lower() in TRAIN_IMAGE_EXTENSIONS),
+        key=lambda path: path.name.lower(),
+    )
+
+
+def write_label_voc_xml(xml_path: Path, image_name: str, frame, objects: list[LabelTrackObject]) -> None:
+    height, width = frame.shape[:2]
+    depth = frame.shape[2] if len(frame.shape) == 3 else 1
+    root = ET.Element("annotation")
+    ET.SubElement(root, "filename").text = image_name
+    size = ET.SubElement(root, "size")
+    ET.SubElement(size, "width").text = str(width)
+    ET.SubElement(size, "height").text = str(height)
+    ET.SubElement(size, "depth").text = str(depth)
+    ET.SubElement(root, "segmented").text = "0"
+    for obj in objects:
+        if not obj.ok:
+            continue
+        x, y, w, h = obj.bbox
+        item = ET.SubElement(root, "object")
+        ET.SubElement(item, "name").text = obj.label
+        ET.SubElement(item, "truncated").text = "0"
+        ET.SubElement(item, "difficult").text = "0"
+        ET.SubElement(item, "occluded").text = "0"
+        box = ET.SubElement(item, "bndbox")
+        ET.SubElement(box, "xmin").text = str(x)
+        ET.SubElement(box, "ymin").text = str(y)
+        ET.SubElement(box, "xmax").text = str(x + w)
+        ET.SubElement(box, "ymax").text = str(y + h)
+    ET.indent(root, space="  ")
+    ET.ElementTree(root).write(xml_path, encoding="UTF-8", xml_declaration=True)
+
+
+def label_session_state(session: dict[str, Any]) -> dict[str, Any]:
+    frame = session["frame"]
+    height, width = frame.shape[:2]
+    return {
+        "session_id": session["id"],
+        "source_type": session["source_type"],
+        "frame_index": session["frame_index"],
+        "frame_count": session["frame_count"],
+        "width": width,
+        "height": height,
+        "objects": [label_object_data(obj) for obj in session["objects"]],
+        "labels": session["labels"],
+        "tracker": session["tracker"],
+        "saved": session["saved"],
+        "interval": session["interval"],
+        "processed": session["processed"],
+        "max_frames": session["max_frames"],
+        "ended": session["ended"],
+        "lost": any(not obj.ok for obj in session["objects"]),
+    }
+
+
+def get_label_session(session_id: str) -> dict[str, Any]:
+    with LABEL_SESSIONS_LOCK:
+        session = LABEL_SESSIONS.get(session_id)
+    if session is None:
+        raise ValueError("标注会话不存在或已结束。")
+    return session
+
+
+def open_label_camera(camera_index: int):
+    backends = [(cv2.CAP_ANY, "default")]
+    if sys.platform.startswith("win"):
+        backends = [(cv2.CAP_DSHOW, "DirectShow"), (cv2.CAP_MSMF, "MSMF"), *backends]
+    for backend, name in backends:
+        cap = cv2.VideoCapture(camera_index, backend)
+        if not cap.isOpened():
+            cap.release()
+            continue
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        for _ in range(10):
+            ok, frame = cap.read()
+            if ok and frame is not None:
+                return cap, frame, name
+        cap.release()
+    raise ValueError("摄像头无法打开。请关闭占用程序、检查系统摄像头权限，或尝试其他索引。")
+
+
+def start_label_session(values: dict[str, Any]) -> dict[str, Any]:
+    validate("label", values)
+    source_type = values.get("label_source_type", "video")
+    cap = None
+    files: Optional[list[Path]] = None
+    source_image_path: Optional[Path] = None
+    frame_count = 0
+    start_frame = max(0, int(values.get("label_start_frame", "0") or 0))
+    if source_type == "images":
+        files = label_image_files(Path(values["label_images_input_dir"]).resolve())
+        if not files:
+            raise ValueError("图片集文件夹内没有可标注图片。")
+        frame_index = min(start_frame, len(files) - 1)
+        source_image_path = files[frame_index]
+        frame = cv2.imread(str(source_image_path))
+        if frame is None:
+            raise ValueError("无法读取起始图片。")
+        frame_count = len(files)
+    elif source_type == "camera":
+        cap, frame, backend = open_label_camera(int(values["label_camera_index"]))
+        frame_index = 0
+        append_log(f"\n[网页标注] 摄像头 {values['label_camera_index']} 已通过 {backend} 打开。\n")
+    else:
+        video_path = Path(values["label_video"]).expanduser().resolve()
+        if not video_path.is_file() or video_path.suffix.lower() not in VIDEO_EXTENSIONS:
+            raise ValueError("视频文件不存在或格式不支持。")
+        cap = cv2.VideoCapture(str(video_path))
+        if not cap.isOpened():
+            cap.release()
+            raise ValueError("视频无法打开，可能是当前 OpenCV 不支持该编码。")
+        if start_frame:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+        ok, frame = cap.read()
+        if not ok or frame is None:
+            cap.release()
+            raise ValueError("无法读取视频起始帧。")
+        frame_index = max(0, int(cap.get(cv2.CAP_PROP_POS_FRAMES)) - 1)
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    images_dir = Path(values["label_images_dir"]).resolve()
+    annotations_dir = Path(values["label_annotations_dir"]).resolve()
+    if source_type != "images":
+        images_dir.mkdir(parents=True, exist_ok=True)
+    annotations_dir.mkdir(parents=True, exist_ok=True)
+    session_id = uuid.uuid4().hex
+    session = {
+        "id": session_id, "lock": threading.RLock(), "source_type": source_type, "cap": cap, "files": files,
+        "frame": frame, "frame_index": frame_index, "frame_count": frame_count, "source_image_path": source_image_path,
+        "objects": [], "next_object_id": 1, "saved": 0, "processed": 0, "ended": False,
+        "labels": parse_label_names(values["label_name"]), "tracker": values["label_tracker"],
+        "interval": max(1, int(values["label_interval"] or 1)), "max_frames": max(0, int(values["label_max_frames"] or 0)),
+        "images_dir": images_dir, "annotations_dir": annotations_dir, "prefix": values["label_prefix"].strip() or "track",
+        "jpeg_quality": max(1, min(100, int(values["label_jpeg_quality"] or 95))),
+    }
+    with LABEL_SESSIONS_LOCK:
+        LABEL_SESSIONS[session_id] = session
+    append_log(f"[网页标注] 会话已创建：{source_type}，请在页面框选目标。\n")
+    return label_session_state(session)
+
+
+def save_label_session_sample(session: dict[str, Any]) -> bool:
+    objects = [obj for obj in session["objects"] if obj.ok]
+    if not objects:
+        return False
+    frame = session["frame"]
+    source_image_path = session["source_image_path"]
+    if source_image_path is not None:
+        image_name = source_image_path.name
+        xml_path = session["annotations_dir"] / f"{source_image_path.stem}.xml"
+    else:
+        stem = f"{session['prefix']}_{session['frame_index']:06d}"
+        image_name = stem + ".jpg"
+        image_path = session["images_dir"] / image_name
+        if not cv2.imwrite(str(image_path), frame, [int(cv2.IMWRITE_JPEG_QUALITY), session["jpeg_quality"]]):
+            raise ValueError("标注图片保存失败。")
+        xml_path = session["annotations_dir"] / f"{stem}.xml"
+    write_label_voc_xml(xml_path, image_name, frame, objects)
+    session["saved"] += 1
+    return True
+
+
+def advance_label_session(session: dict[str, Any]) -> dict[str, Any]:
+    if session["ended"]:
+        return label_session_state(session)
+    if session["max_frames"] and session["processed"] >= session["max_frames"]:
+        session["ended"] = True
+        return label_session_state(session)
+    if session["source_type"] == "images":
+        next_index = session["frame_index"] + 1
+        if next_index >= len(session["files"]):
+            session["ended"] = True
+            return label_session_state(session)
+        frame = cv2.imread(str(session["files"][next_index]))
+        if frame is None:
+            raise ValueError("下一张图片无法读取。")
+        session["frame_index"] = next_index
+        session["source_image_path"] = session["files"][next_index]
+    else:
+        ok, frame = session["cap"].read()
+        if not ok or frame is None:
+            session["ended"] = True
+            return label_session_state(session)
+        if session["source_type"] == "camera":
+            session["frame_index"] += 1
+        else:
+            session["frame_index"] = max(0, int(session["cap"].get(cv2.CAP_PROP_POS_FRAMES)) - 1)
+        session["source_image_path"] = None
+    session["frame"] = frame
+    session["processed"] += 1
+    for obj in session["objects"]:
+        if not obj.ok:
+            continue
+        ok, bbox = obj.tracker.update(frame)
+        obj.bbox = sanitize_label_bbox(bbox, frame.shape[1], frame.shape[0])
+        obj.ok = bool(ok)
+    if session["objects"] and session["frame_index"] % session["interval"] == 0:
+        save_label_session_sample(session)
+    return label_session_state(session)
+
+
+def end_label_session(session_id: str) -> None:
+    with LABEL_SESSIONS_LOCK:
+        session = LABEL_SESSIONS.pop(session_id, None)
+    if session is None:
+        return
+    with session["lock"]:
+        cap = session.get("cap")
+        if cap is not None:
+            cap.release()
+        session["ended"] = True
+    append_log("[网页标注] 会话已结束。\n")
+
+
+
+
+
+def parse_voc_xml(xml_path: Path) -> dict[str, Any]:
+    root = ET.parse(xml_path).getroot()
+    filename = root.findtext("filename", default=xml_path.with_suffix(".jpg").name)
+    boxes = []
+    for obj in root.findall("object"):
+        name = obj.findtext("name", default="")
+        box = obj.find("bndbox")
+        if box is None:
+            continue
+        boxes.append({
+            "name": name,
+            "xmin": int(float(box.findtext("xmin", default="0"))),
+            "ymin": int(float(box.findtext("ymin", default="0"))),
+            "xmax": int(float(box.findtext("xmax", default="0"))),
+            "ymax": int(float(box.findtext("ymax", default="0"))),
+        })
+    return {"filename": filename, "boxes": boxes}
+
+
+def label_result_images_dir(values: dict[str, Any]) -> Path:
+    if values.get("label_source_type") == "images":
+        return Path(values.get("label_images_input_dir", "")).resolve()
+    return Path(values["label_images_dir"]).resolve()
+
+
+def list_label_results(values: dict[str, Any]) -> list[dict[str, Any]]:
+    images_dir = label_result_images_dir(values)
+    annotations_dir = Path(values["label_annotations_dir"]).resolve()
+    if not images_dir.is_dir() or not annotations_dir.is_dir():
+        return []
+    results = []
+    xml_files = sorted(annotations_dir.glob("*.xml"), key=lambda p: p.stat().st_mtime, reverse=True)
+    for xml_path in xml_files[:300]:
+        try:
+            meta = parse_voc_xml(xml_path)
+        except Exception:
+            continue
+        image_path = images_dir / meta["filename"]
+        if not image_path.exists():
+            for ext in (".jpg", ".jpeg", ".png", ".bmp"):
+                candidate = images_dir / (xml_path.stem + ext)
+                if candidate.exists():
+                    image_path = candidate
+                    break
+        if not image_path.exists():
+            continue
+        results.append({
+            "stem": xml_path.stem,
+            "image": str(image_path),
+            "xml": str(xml_path),
+            "boxes": meta["boxes"],
+            "mtime": int(xml_path.stat().st_mtime),
+        })
+    return results
+
+
+def list_label_videos(values: dict[str, Any]) -> list[dict[str, Any]]:
+    video_dir_raw = values.get("label_video_dir", "").strip()
+    if not video_dir_raw:
+        return []
+    video_dir = Path(video_dir_raw).expanduser().resolve()
+    if not video_dir.is_dir():
+        return []
+    videos = []
+    for path in video_dir.rglob("*"):
+        if len(videos) >= MAX_LABEL_VIDEOS:
+            break
+        if not path.is_file() or path.suffix.lower() not in VIDEO_EXTENSIONS:
+            continue
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        videos.append({
+            "name": path.name,
+            "stem": path.stem,
+            "path": str(path),
+            "rel": str(path.relative_to(video_dir)),
+            "size": stat.st_size,
+            "mtime": int(stat.st_mtime),
+        })
+    videos.sort(key=lambda item: item["rel"].lower())
+    return videos
+
+
+
+
+
+def list_train_plots() -> tuple[Path, list[dict[str, Any]]]:
+    with STATE_LOCK:
+        plot_dir_raw = str(STATE["markers"].get("train_plot_dir", "")).strip()
+    if not plot_dir_raw:
+        return Path(), []
+    plot_dir = Path(plot_dir_raw).resolve()
+    if not plot_dir.is_dir():
+        return plot_dir, []
+    items = [
+        {"name": path.name, "mtime": int(path.stat().st_mtime)}
+        for path in sorted(plot_dir.iterdir(), key=lambda item: item.name.lower())
+        if path.is_file() and path.suffix.lower() in TRAIN_IMAGE_EXTENSIONS
+    ]
+    return plot_dir, items
+
+
+def send_train_plot(handler: BaseHTTPRequestHandler, plot_dir: Path, name: str) -> None:
+    image_path = resolve_under(name, plot_dir)
+    if not image_path.is_file() or image_path.suffix.lower() not in TRAIN_IMAGE_EXTENSIONS:
+        raise ValueError("训练图片不存在或格式不支持。")
+    raw = image_path.read_bytes()
+    content_type = mimetypes.guess_type(str(image_path))[0] or "application/octet-stream"
+    handler.send_response(HTTPStatus.OK)
+    handler.send_header("Content-Type", content_type)
+    handler.send_header("Cache-Control", "no-store")
+    handler.send_header("Content-Length", str(len(raw)))
+    handler.end_headers()
+    handler.wfile.write(raw)
+
+
+def pick_image_file(initial_path: str = "") -> str:
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+    except Exception as exc:
+        raise RuntimeError("当前环境不支持系统文件选择器，请手动粘贴图片路径。") from exc
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    initial_dir = str(Path(initial_path).expanduser().parent) if initial_path else str(SCRIPT_ROOT)
+    if not Path(initial_dir).is_dir():
+        initial_dir = str(SCRIPT_ROOT)
+    selected = filedialog.askopenfilename(
+        parent=root,
+        initialdir=initial_dir,
+        title="选择测试图片",
+        filetypes=[("图片", "*.jpg *.jpeg *.png *.bmp *.webp"), ("所有文件", "*.*")],
+    )
+    root.destroy()
+    return selected
+
+
+def pick_model_file(initial_path: str = "") -> str:
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+    except Exception as exc:
+        raise RuntimeError("当前环境不支持系统文件选择器，请手动粘贴模型路径。") from exc
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    initial_dir = str(Path(initial_path).expanduser().parent) if initial_path else str(SCRIPT_ROOT)
+    if not Path(initial_dir).is_dir():
+        initial_dir = str(SCRIPT_ROOT)
+    selected = filedialog.askopenfilename(
+        parent=root,
+        initialdir=initial_dir,
+        title="选择 YOLO 基础模型",
+        filetypes=[("PyTorch 模型", "*.pt"), ("所有文件", "*.*")],
+    )
+    root.destroy()
+    return selected
+
+
+def pick_directory(initial_dir: str = "", title: str = "选择文件夹") -> str:
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+    except Exception as exc:
+        raise RuntimeError("当前环境不支持系统文件夹选择器，请手动粘贴文件夹路径。") from exc
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    start = initial_dir if initial_dir and Path(initial_dir).expanduser().exists() else str(SCRIPT_ROOT)
+    selected = filedialog.askdirectory(parent=root, initialdir=start, title=title)
+    root.destroy()
+    return selected
+
+
+def read_video_preview_frame(video_path: Path):
+    backends = [cv2.CAP_ANY]
+    if hasattr(cv2, "CAP_FFMPEG"):
+        backends.append(cv2.CAP_FFMPEG)
+    if hasattr(cv2, "CAP_MSMF"):
+        backends.append(cv2.CAP_MSMF)
+    tried = set()
+    for backend in backends:
+        if backend in tried:
+            continue
+        tried.add(backend)
+        cap = cv2.VideoCapture(str(video_path), backend)
+        try:
+            if not cap.isOpened():
+                continue
+            for frame_no in (0, 1, 3, 10, 30):
+                if frame_no:
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_no)
+                ok, frame = cap.read()
+                if ok and frame is not None:
+                    return frame
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            for _ in range(30):
+                ok = cap.grab()
+                if not ok:
+                    break
+                ok, frame = cap.retrieve()
+                if ok and frame is not None:
+                    return frame
+        finally:
+            cap.release()
+    raise ValueError("无法读取视频预览帧，可能是编码器不受当前 OpenCV 支持。")
+
+
+def render_video_preview(video_path: Path) -> bytes:
+    video_path = video_path.resolve()
+    if not video_path.is_file() or video_path.suffix.lower() not in VIDEO_EXTENSIONS:
+        raise ValueError("视频文件不存在或格式不支持。")
+    stat = video_path.stat()
+    cache_key = (str(video_path), int(stat.st_mtime), stat.st_size)
+    cached = VIDEO_PREVIEW_CACHE.get(cache_key)
+    if cached is not None:
+        VIDEO_PREVIEW_CACHE.move_to_end(cache_key)
+        return cached
+    frame = read_video_preview_frame(video_path)
+    h, w = frame.shape[:2]
+    if w > MAX_VIDEO_PREVIEW_WIDTH:
+        scale = MAX_VIDEO_PREVIEW_WIDTH / w
+        frame = cv2.resize(frame, (MAX_VIDEO_PREVIEW_WIDTH, max(1, int(h * scale))), interpolation=cv2.INTER_AREA)
+    ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 78])
+    if not ok:
+        raise ValueError("视频预览图编码失败。")
+    raw = encoded.tobytes()
+    VIDEO_PREVIEW_CACHE[cache_key] = raw
+    VIDEO_PREVIEW_CACHE.move_to_end(cache_key)
+    while len(VIDEO_PREVIEW_CACHE) > VIDEO_PREVIEW_CACHE_LIMIT:
+        VIDEO_PREVIEW_CACHE.popitem(last=False)
+    return raw
+
+
+
+
+
+
+def send_video_file(handler: BaseHTTPRequestHandler, video_path: Path) -> None:
+    video_path = video_path.resolve()
+    if not video_path.is_file() or video_path.suffix.lower() not in VIDEO_EXTENSIONS:
+        raise ValueError("视频文件不存在或格式不支持。")
+    file_size = video_path.stat().st_size
+    start = 0
+    end = min(file_size - 1, 8 * 1024 * 1024 - 1)
+    status = HTTPStatus.PARTIAL_CONTENT
+    range_header = handler.headers.get("Range", "")
+    if range_header.startswith("bytes="):
+        raw_range = range_header.removeprefix("bytes=").split(",", 1)[0].strip()
+        left, _, right = raw_range.partition("-")
+        if left:
+            start = int(left)
+            end = int(right) if right else file_size - 1
+        elif right:
+            suffix_len = int(right)
+            start = max(file_size - suffix_len, 0)
+            end = file_size - 1
+        if start < 0 or end < start or start >= file_size:
+            handler.send_response(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE)
+            handler.send_header("Content-Range", f"bytes */{file_size}")
+            handler.end_headers()
+            return
+        end = min(end, file_size - 1)
+    length = end - start + 1
+    content_type = VIDEO_MIME_TYPES.get(video_path.suffix.lower()) or mimetypes.guess_type(str(video_path))[0] or "application/octet-stream"
+
+    handler.send_response(status)
+    handler.send_header("Content-Type", content_type)
+    handler.send_header("Accept-Ranges", "bytes")
+    handler.send_header("Cache-Control", "no-store")
+    handler.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
+    handler.send_header("Content-Length", str(length))
+    handler.end_headers()
+    with video_path.open("rb") as fh:
+        fh.seek(start)
+        remaining = length
+        while remaining > 0:
+            chunk = fh.read(min(256 * 1024, remaining))
+            if not chunk:
+                break
+            try:
+                handler.wfile.write(chunk)
+            except (BrokenPipeError, ConnectionResetError):
+                break
+            remaining -= len(chunk)
+
+
+
+
+
+
+
+
+def render_label_preview(image_path: Path, xml_path: Path) -> bytes:
+
+
+    frame = cv2.imread(str(image_path))
+    if frame is None:
+        raise ValueError("图片不可读取。")
+    meta = parse_voc_xml(xml_path)
+    line_thickness = max(5, round(min(frame.shape[:2]) / 180))
+    text_scale = max(0.7, min(frame.shape[:2]) / 1400)
+    for box in meta["boxes"]:
+        p1 = (box["xmin"], box["ymin"])
+        p2 = (box["xmax"], box["ymax"])
+        cv2.rectangle(frame, p1, p2, (40, 220, 120), line_thickness, cv2.LINE_AA)
+        label_y = max(24, p1[1] - 8)
+        cv2.putText(frame, box["name"], (p1[0], label_y), cv2.FONT_HERSHEY_SIMPLEX, text_scale, (0, 0, 0), line_thickness + 2, cv2.LINE_AA)
+        cv2.putText(frame, box["name"], (p1[0], label_y), cv2.FONT_HERSHEY_SIMPLEX, text_scale, (240, 255, 245), max(2, line_thickness // 2), cv2.LINE_AA)
+    ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 88])
+    if not ok:
+        raise ValueError("预览图编码失败。")
+    return encoded.tobytes()
+
+
+HTML_PAGE = r'''<!doctype html>
+
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MyAutoTrain 团队训练平台</title>
+<style>
+:root{--bg:#09111f;--panel:rgba(255,255,255,.08);--panel2:rgba(255,255,255,.13);--text:#eef6ff;--muted:#9fb0c7;--line:rgba(255,255,255,.14);--blue:#56a8ff;--green:#30d287;--purple:#a78bfa;--orange:#ffbd5a;--red:#ff6678;--shadow:0 24px 70px rgba(0,0,0,.35);font-family:"Microsoft YaHei UI","Segoe UI",system-ui,sans-serif}*{box-sizing:border-box}body{margin:0;color:var(--text);background:radial-gradient(circle at 15% 10%,#173c73 0,#09111f 34%),radial-gradient(circle at 86% 0,#41226d 0,transparent 30%),linear-gradient(135deg,#09111f,#0c1528);min-height:100vh}.wrap{width:min(1380px,calc(100% - 36px));margin:0 auto;padding:28px 0 36px}.hero{display:grid;grid-template-columns:1.2fr .8fr;gap:18px;align-items:stretch;margin-bottom:18px}.card{background:var(--panel);border:1px solid var(--line);box-shadow:var(--shadow);border-radius:26px;backdrop-filter:blur(18px)}.title{padding:30px}.eyebrow{display:inline-flex;gap:8px;align-items:center;color:#cde4ff;background:rgba(86,168,255,.13);border:1px solid rgba(86,168,255,.25);padding:7px 12px;border-radius:999px;font-size:13px}.dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 16px var(--green)}h1{font-size:42px;letter-spacing:-.04em;margin:18px 0 10px}.subtitle{color:var(--muted);line-height:1.8;margin:0;max-width:780px}.guide{padding:24px}.steps{display:grid;gap:12px}.step{display:flex;gap:12px;align-items:flex-start;padding:13px;border:1px solid var(--line);background:rgba(255,255,255,.06);border-radius:18px}.num{flex:0 0 30px;width:30px;height:30px;border-radius:12px;background:linear-gradient(135deg,var(--blue),var(--purple));display:grid;place-items:center;font-weight:800}.step b{display:block;margin-bottom:3px}.step span{color:var(--muted);font-size:13px;line-height:1.5}.layout{display:grid;grid-template-columns:290px 1fr;gap:18px}.side{position:sticky;top:18px;height:fit-content;padding:16px}.nav{display:grid;gap:10px}.nav button{all:unset;cursor:pointer;padding:15px 16px;border-radius:18px;color:var(--muted);border:1px solid transparent;display:flex;justify-content:space-between;align-items:center}.nav button.active{background:linear-gradient(135deg,rgba(86,168,255,.22),rgba(167,139,250,.18));border-color:rgba(255,255,255,.18);color:var(--text)}.status{margin-top:14px;padding:14px;border-radius:18px;background:rgba(0,0,0,.23);border:1px solid var(--line);overflow:hidden}.pill{display:inline-flex;align-items:center;gap:8px;padding:7px 11px;border-radius:999px;font-size:13px;border:1px solid var(--line);color:var(--muted);max-width:100%}.pill span:last-child{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.pill.run{color:#bff8dc;border-color:rgba(48,210,135,.35);background:rgba(48,210,135,.1)}.pill.idle{color:#d5e5ff;background:rgba(86,168,255,.08)}.main{display:grid;gap:18px}.tab{display:none}.tab.active{display:block}.section{padding:22px;margin-bottom:18px}.section h2{margin:0 0 6px;font-size:24px}.hint{margin:0 0 18px;color:var(--muted);line-height:1.65}.grid{display:grid;grid-template-columns:repeat(12,1fr);gap:14px}.field{grid-column:span 6}.field.sm{grid-column:span 3}.field.full{grid-column:1/-1}label{display:block;color:#d9e9ff;font-size:13px;margin:0 0 7px}input,select{width:100%;background:rgba(5,12,24,.72);border:1px solid var(--line);border-radius:14px;color:var(--text);padding:12px 13px;outline:none;transition:.2s}input:focus,select:focus{border-color:rgba(86,168,255,.72);box-shadow:0 0 0 4px rgba(86,168,255,.13)}.choice{display:flex;gap:10px;flex-wrap:wrap}.choice label{margin:0;cursor:pointer}.choice input{display:none}.choice span{display:inline-flex;padding:10px 13px;border-radius:14px;border:1px solid var(--line);background:rgba(255,255,255,.06);color:var(--muted)}.choice input:checked+span{color:var(--text);border-color:rgba(86,168,255,.58);background:rgba(86,168,255,.18)}.actions{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin-top:18px}.btns{display:flex;gap:10px;flex-wrap:wrap}.btn{all:unset;cursor:pointer;border-radius:15px;padding:12px 17px;font-weight:700;border:1px solid var(--line);background:var(--panel2)}.btn.primary{background:linear-gradient(135deg,#238bff,#8b5cf6);border:0}.btn.green{background:linear-gradient(135deg,#18aa69,#22c98a);border:0}.btn.blue{background:linear-gradient(135deg,#1877f2,#56a8ff);border:0}.btn.red{background:rgba(255,102,120,.14);border-color:rgba(255,102,120,.35);color:#ffd7dd}.cmd{margin-top:14px;background:#050b15;border:1px solid var(--line);border-radius:18px;padding:14px;color:#bad4f6;white-space:pre-wrap;word-break:break-all;font-family:"Cascadia Mono",Consolas,monospace;font-size:12px;line-height:1.55}.log{height:360px;overflow:auto;background:#030813;border:1px solid rgba(255,255,255,.12);border-radius:20px;padding:16px;white-space:pre-wrap;color:#c6f6d5;font-family:"Cascadia Mono",Consolas,monospace;font-size:12px;line-height:1.55}.toast{position:fixed;right:22px;bottom:22px;max-width:420px;padding:14px 16px;border-radius:16px;background:#101d33;border:1px solid var(--line);box-shadow:var(--shadow);display:none}.toast.show{display:block}.mini{color:var(--muted);font-size:12px;margin-top:7px}.markers{display:grid;gap:8px;margin-top:10px;min-width:0}.marker{display:grid;grid-template-columns:1fr;gap:5px;align-items:start;padding:10px;border-radius:14px;background:rgba(255,255,255,.05);border:1px solid var(--line);font-size:12px;color:var(--muted);min-width:0;overflow:hidden}.marker b{color:#dcecff;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.marker span{min-width:0;overflow-wrap:anywhere;word-break:break-all;white-space:normal;line-height:1.45}.gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:14px;margin-top:16px}.sample{overflow:hidden;border-radius:18px;border:1px solid var(--line);background:rgba(255,255,255,.06)}.sample img{width:100%;display:block;aspect-ratio:16/10;object-fit:cover;background:#050b15}.sample .meta{padding:11px;font-size:12px;color:var(--muted);display:grid;gap:8px}.sample .delete{all:unset;cursor:pointer;text-align:center;padding:9px 10px;border-radius:12px;background:rgba(255,102,120,.14);border:1px solid rgba(255,102,120,.35);color:#ffd7dd;font-weight:700}.empty{padding:16px;border:1px dashed var(--line);border-radius:18px;color:var(--muted);margin-top:14px}.input-action{display:flex;gap:10px;align-items:stretch}.input-action input{min-width:0;flex:1}.input-action .btn{white-space:nowrap}@media(max-width:520px){.input-action{flex-direction:column}}.label-workspace{display:grid;grid-template-columns:minmax(280px,360px) 1fr;gap:16px;margin-top:18px}.train-board{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:18px}.progress-card{border:1px solid var(--line);background:rgba(255,255,255,.055);border-radius:22px;padding:16px;overflow:hidden}.progress-card.wide{grid-column:1/-1}.progress-head{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:12px}.progress-head b{font-size:16px}.progress-head span{color:var(--muted);font-size:12px}.bar{height:16px;border-radius:999px;background:rgba(5,12,24,.72);border:1px solid var(--line);overflow:hidden}.bar div{height:100%;border-radius:999px;background:linear-gradient(90deg,var(--green),var(--blue),var(--purple));transition:width .25s ease}.metrics-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-top:12px}.metrics-grid div{padding:10px;border-radius:14px;background:rgba(0,0,0,.18);border:1px solid var(--line);min-width:0}.metrics-grid span{display:block;color:var(--muted);font-size:12px;margin-bottom:4px}.metrics-grid b{display:block;color:#eff8ff;font-size:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.loss-grid{grid-template-columns:repeat(3,1fr)}canvas{width:100%;height:180px;margin-top:10px;border-radius:14px;background:rgba(3,8,19,.72);border:1px solid rgba(255,255,255,.1)}.panel{border:1px solid var(--line);background:rgba(255,255,255,.055);border-radius:22px;padding:16px}.panel h3{margin:0 0 10px;font-size:16px}.queue-head{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:10px}.count{color:var(--muted);font-size:12px}.video-list{display:grid;gap:8px;max-height:300px;overflow:auto;padding-right:4px}.video-preview{margin-top:14px}.video-preview-box{min-height:220px;border:1px dashed var(--line);border-radius:18px;background:rgba(5,12,24,.42);display:grid;place-items:center;overflow:hidden;color:var(--muted);font-size:12px;text-align:center;position:relative}.video-preview-box.clickable{cursor:pointer;border-style:solid;border-color:rgba(86,168,255,.42)}.video-preview-box img,.video-preview-box video{width:100%;height:100%;display:block;object-fit:contain;background:#050b15}.video-preview-box video{min-height:220px}.play-overlay{position:absolute;inset:0;display:grid;place-items:center;background:linear-gradient(180deg,rgba(5,12,24,.08),rgba(5,12,24,.48));pointer-events:none}.play-button{width:66px;height:66px;border-radius:50%;display:grid;place-items:center;background:rgba(86,168,255,.86);box-shadow:0 14px 36px rgba(0,0,0,.42);color:white;font-size:30px;line-height:1;transform:translateY(-2px)}.video-item{all:unset;cursor:pointer;display:grid;gap:5px;padding:11px 12px;border-radius:15px;border:1px solid var(--line);background:rgba(5,12,24,.42)}.video-item.active{border-color:rgba(86,168,255,.75);background:rgba(86,168,255,.16)}.video-item.done{border-color:rgba(48,210,135,.38)}.video-item b{font-size:13px;color:#edf7ff;word-break:break-all}.video-item span{font-size:12px;color:var(--muted);word-break:break-all}.current-video{display:grid;gap:8px;padding:12px 14px;border-radius:18px;background:rgba(86,168,255,.12);border:1px solid rgba(86,168,255,.24);margin-bottom:14px}.current-video b{word-break:break-all}.label-config{display:grid;grid-template-columns:repeat(12,1fr);gap:14px}.label-config .field{grid-column:span 6}.label-config .field.sm{grid-column:span 3}.label-config .field.full{grid-column:1/-1}.quick-help{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:14px}.quick-help div{padding:10px;border-radius:14px;background:rgba(0,0,0,.18);border:1px solid var(--line);font-size:12px;color:var(--muted)}.quick-help b{display:block;color:#e6f2ff;margin-bottom:3px}@media(max-width:1100px){.label-workspace{grid-template-columns:1fr}.quick-help{grid-template-columns:repeat(2,1fr)}}@media(max-width:980px){.hero,.layout{grid-template-columns:1fr}.side{position:static}.field,.field.sm,.label-config .field,.label-config .field.sm{grid-column:1/-1}h1{font-size:32px}}.label-studio{margin-top:18px}.label-studio[hidden]{display:none}.label-stage{position:relative;background:#030813;border:1px solid var(--line);border-radius:20px;overflow:hidden;min-height:300px;display:grid;place-items:center}.label-stage img{display:block;width:100%;max-height:650px;object-fit:contain;user-select:none}.label-stage canvas{position:absolute;inset:0;width:100%;height:100%;margin:0;border:0;background:transparent;touch-action:none;cursor:crosshair}.label-stage.empty-stage{color:var(--muted);padding:28px;text-align:center}.label-studio-grid{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:16px}.label-status{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}.label-status span{padding:7px 10px;border-radius:999px;background:rgba(86,168,255,.12);border:1px solid rgba(86,168,255,.24);font-size:12px;color:#dcecff}.label-object-list{display:grid;gap:8px;max-height:360px;overflow:auto}.label-object{all:unset;cursor:pointer;display:flex;justify-content:space-between;gap:8px;padding:11px;border:1px solid var(--line);border-radius:14px;background:rgba(5,12,24,.42);font-size:12px}.label-object.active{border-color:rgba(86,168,255,.8);background:rgba(86,168,255,.17)}.label-object.lost{border-color:rgba(255,102,120,.55);color:#ffd7dd}.label-object span{color:var(--muted)}.label-help{font-size:12px;color:var(--muted);line-height:1.65;margin-top:12px}@media(max-width:980px){.label-studio-grid{grid-template-columns:1fr}}
+.onboarding{display:grid;gap:14px;margin:16px 0 18px;padding:17px;border-radius:20px;background:linear-gradient(135deg,rgba(86,168,255,.13),rgba(48,210,135,.07));border:1px solid rgba(86,168,255,.28)}.onboarding-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;flex-wrap:wrap}.onboarding-head b{font-size:17px}.onboarding-head span{display:block;color:var(--muted);font-size:12px;margin-top:5px}.preset-row{display:flex;gap:9px;flex-wrap:wrap}.preset{all:unset;cursor:pointer;padding:9px 13px;border-radius:13px;border:1px solid var(--line);background:rgba(5,12,24,.45);font-size:13px}.preset:hover{border-color:rgba(86,168,255,.65);background:rgba(86,168,255,.12)}.readiness{display:grid;gap:9px;margin:14px 0 18px}.readiness[hidden]{display:none}.check-item{display:grid;grid-template-columns:24px minmax(110px,170px) 1fr;gap:10px;align-items:start;padding:11px 13px;border-radius:15px;border:1px solid var(--line);background:rgba(5,12,24,.42);font-size:13px}.check-icon{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;font-weight:800}.check-item.ok .check-icon{background:rgba(48,210,135,.18);color:#8ff0bd}.check-item.warn .check-icon{background:rgba(255,189,90,.18);color:#ffd38f}.check-item.error .check-icon{background:rgba(255,102,120,.18);color:#ff9cab}.check-detail{color:var(--muted);overflow-wrap:anywhere}.advanced-toggle{color:#cde4ff}.advanced-setting{transition:.2s}body:not(.show-advanced) .advanced-setting{display:none}.last-error{margin-top:10px;padding:10px;border-radius:12px;background:rgba(255,102,120,.12);border:1px solid rgba(255,102,120,.28);color:#ffd7dd;font-size:12px;line-height:1.5;overflow-wrap:anywhere}.eyebrow.offline{color:#ffd7dd;background:rgba(255,102,120,.12);border-color:rgba(255,102,120,.3)}.btn[disabled],.preset[disabled]{opacity:.5;cursor:not-allowed}.field-note{display:flex;justify-content:space-between;gap:8px;align-items:center}.field-note .mini{margin-top:0}@media(max-width:680px){.check-item{grid-template-columns:24px 1fr}.check-detail{grid-column:2}.onboarding-head{display:grid}.preset-row{display:grid;grid-template-columns:1fr 1fr}.preset{display:block;text-align:center}}
+/* MyAutoTrain Team light theme */
+:root{--bg:#fff8f8;--panel:#ffffff;--panel2:#fff2f2;--text:#302525;--muted:#806e6e;--line:#eedddd;--blue:#e53935;--green:#27a66b;--purple:#ef6b68;--orange:#e88935;--red:#dc2f2f;--shadow:0 16px 42px rgba(126,43,43,.10)}
+body{color:var(--text);background:radial-gradient(circle at 88% 0,#ffe4e4 0,transparent 30%),linear-gradient(180deg,#fffafa,#fff4f4);font-size:14px}.wrap{width:min(1240px,calc(100% - 32px));padding:22px 0 32px}.hero{grid-template-columns:1fr;margin-bottom:16px}.card{background:var(--panel);border-color:var(--line);box-shadow:var(--shadow);border-radius:20px;backdrop-filter:none}.title{padding:24px 26px}.guide{padding:14px}.steps{grid-template-columns:repeat(3,1fr)}.step{padding:12px;background:#fffafa;border-color:var(--line);border-radius:14px}.num{border-radius:10px;color:#fff;background:linear-gradient(135deg,#e53935,#f06a66)}h1{font-size:36px;margin:14px 0 8px;color:#291f1f}.subtitle,.hint,.mini,.step span{color:var(--muted)}.eyebrow{color:#b32424;background:#fff0f0;border-color:#f3cccc}.eyebrow .dot{background:#e53935;box-shadow:0 0 0 4px #ffe2e2}.layout{grid-template-columns:220px 1fr;gap:16px}.side{padding:12px}.nav{gap:6px}.nav button{padding:13px 14px;border-radius:13px}.nav button:hover{background:#fff5f5;color:#5d4141}.nav button.active{color:#b82121;background:#fff0f0;border-color:#f0cccc}.nav button span{font-size:11px;color:#bca4a4}.status{background:#fffafa;border-color:var(--line);border-radius:14px}.pill.idle{color:#825f5f;background:#fff}.pill.run{color:#137a4c;background:#effaf4;border-color:#bce7cf}.pill.run .dot{background:#27a66b}.section{padding:22px}.section h2{color:#2d2222}.onboarding{background:linear-gradient(135deg,#fff0f0,#fffafa);border-color:#f0cccc;border-radius:16px}.preset{color:#674b4b;background:#fff;border-color:#e9d4d4}.preset:hover{color:#b82121;border-color:#e9a9a9;background:#fff3f3}.advanced-toggle{color:#b82121}label{color:#5f4848;font-weight:650}input,select{color:#352828;background:#fff;border-color:#e7d4d4;border-radius:12px}input:focus,select:focus{border-color:#e45757;box-shadow:0 0 0 4px rgba(229,57,53,.10)}.choice span{color:#745e5e;background:#fff;border-color:#e8d7d7;border-radius:12px}.choice input:checked+span{color:#b82121;border-color:#e79a9a;background:#fff0f0}.btn{color:#5a4242;background:#fff;border-color:#e6d0d0;border-radius:12px}.btn:hover{background:#fff5f5}.btn.primary,.btn.green,.btn.blue{color:#fff;background:linear-gradient(135deg,#d92f2f,#ed625e);border:0}.btn.red{color:#bd2525;background:#fff;border-color:#e7a6a6}.progress-card,.panel{background:#fffafa;border-color:#eedddd;border-radius:16px}.metrics-grid div,.quick-help div{background:#fff;border-color:#eadada}.metrics-grid b,.quick-help b,.marker b,.video-item b{color:#3a2b2b}.bar{background:#f3e7e7;border-color:#ead4d4}.bar div{background:linear-gradient(90deg,#e53935,#f27a74)}.readiness .check-item{background:#fff;border-color:#eadada}.check-item.ok .check-icon{background:#eaf8f0;color:#168354}.check-item.warn .check-icon{background:#fff3e6;color:#b76a1e}.check-item.error .check-icon{background:#fff0f0;color:#c82d2d}.last-error{color:#b62929;background:#fff1f1;border-color:#efc5c5}.marker,.sample,.video-item,.label-object{background:#fff;border-color:#eadada}.sample .delete{color:#b62929;background:#fff1f1;border-color:#efc5c5}.empty{border-color:#e4cfcf}.cmd,.log{color:#5d3c3c;background:#fffafa;border-color:#e7d3d3}.toast{color:#fff;background:#b82d2d;border-color:#a52424}.current-video,.label-status span{color:#9f2727;background:#fff0f0;border-color:#efcaca}.video-preview-box{color:var(--muted);background:#fffafa;border-color:#e8d5d5}.play-button{background:#e53935;box-shadow:0 12px 28px rgba(152,32,32,.25)}.progress-head b,.panel h3{color:#392a2a}.label-stage{border-color:#e4d0d0}.field.full>.onboarding{margin-bottom:0}@media(max-width:980px){.steps{grid-template-columns:1fr}.layout{grid-template-columns:1fr}.side{position:static}.nav{grid-template-columns:repeat(3,1fr)}.nav button{justify-content:center;gap:7px}.status{margin-top:10px}}@media(max-width:620px){.nav{grid-template-columns:1fr 1fr}.wrap{width:min(100% - 20px,1240px)}h1{font-size:29px}.metrics-grid{grid-template-columns:repeat(2,1fr)}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="hero">
+    <div class="card title">
+      <div id="connectionBadge" class="eyebrow"><span class="dot"></span><span>面板已连接 · 本机端口 8989</span></div>
+
+      <h1>MyAutoTrain 团队训练平台</h1>
+      <p class="subtitle">从数据准备到模型测试都在这里完成。第一次使用只需选择数据，系统会自动检查环境并使用可用的训练设备。</p>
+    </div>
+    <div class="card guide">
+      <div class="steps">
+        <div class="step"><div class="num">1</div><div><b>选择数据</b><span>用“选择文件夹”按钮指定图片、XML 标注和输出目录。</span></div></div>
+        <div class="step"><div class="num">2</div><div><b>检查是否就绪</b><span>自动检查图片/标注匹配、YOLO、CUDA 和显卡状态。</span></div></div>
+        <div class="step"><div class="num">3</div><div><b>开始训练</b><span>实时查看进度；训练完成后可以直接测试或导出模型。</span></div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="layout">
+    <aside class="card side">
+      <div class="nav">
+        <button data-tab="train" class="active">开始训练 <span>01</span></button>
+        <button data-tab="dataset">准备数据 <span>02</span></button>
+        <button data-tab="test">测试模型 <span>03</span></button>
+        <button data-tab="label">辅助标注 <span>04</span></button>
+        <button data-tab="convert" class="advanced-setting">设备转换 <span>05</span></button>
+        <button data-tab="logs">运行记录 <span>06</span></button>
+
+      </div>
+      <div class="status">
+        <div id="runPill" class="pill idle"><span class="dot"></span><span>空闲</span></div>
+        <div class="mini" id="jobInfo">暂无任务</div>
+        <div id="lastError" class="last-error" hidden></div>
+        <div class="markers" id="markers"></div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <section id="tab-train" class="tab active card section">
+        <h2>开始训练</h2><p class="hint">可直接导入下载好的 YOLO 数据集，也可继续使用图片 + XML。其他参数已按 640×480 稳定训练配置准备好。</p>
+        <div class="onboarding">
+          <div class="onboarding-head"><div><b>选择训练方式</b><span>不确定时使用“640×480 推荐”；训练不会自动早停，由你手动结束。</span></div><button id="advanced-toggle" class="preset advanced-toggle" onclick="toggleAdvancedSettings()">更多设置</button></div>
+          <div class="preset-row">
+            <button class="preset" onclick="pickRawDatasetRoot(true)">导入下载的数据集</button>
+            <button class="preset" onclick="applyTrainPreset('smoke')">首次试跑 · 5 轮</button>
+            <button class="preset" onclick="applyTrainPreset('camera4060')">640×480 推荐</button>
+            <button class="preset advanced-setting" onclick="applyTrainPreset('balanced')">固定训练 · 100 轮</button>
+            <button class="preset" onclick="applyTrainPreset('quality')">持续训练 · 手动停止</button>
+            <button class="preset" onclick="checkTrainReady(true)">只检查，不启动</button>
+          </div>
+        </div>
+        <div id="prepared-dataset-banner" class="readiness" hidden></div>
+        <div id="train-readiness" class="readiness" hidden></div>
+        <div class="grid">
+          <input id="prepared_dataset_yaml" type="hidden">
+          <div class="field full advanced-setting"><label>训练任务</label><div class="choice"><label><input name="train_task" type="radio" value="detect"><span>目标检测（图片 + XML 标注）</span></label><label><input name="train_task" type="radio" value="classify"><span>图像分类（类别子文件夹）</span></label></div><div class="mini" id="train-task-hint">检测：Images Dir 与 Annotations Dir 一一对应；分类：Images Dir 下每个子文件夹即一个类别，例如 normal/、defect/。</div></div>
+          <div class="field full"><label>训练输出目录</label><div class="input-action"><input id="dataset_root" placeholder="训练结果和模型将保存在这里"><button class="btn" onclick="pickTrainDirectory('dataset_root')">选择文件夹</button></div></div>
+          <div class="field"><label>训练图片目录</label><div class="input-action"><input id="train_images_dir" placeholder="例如 D:/dataset/images"><button class="btn" onclick="pickTrainDirectory('train_images_dir')">选择文件夹</button></div></div>
+          <div class="field" id="annotations-field"><label>XML 标注目录</label><div class="input-action"><input id="train_annotations_dir" placeholder="例如 D:/dataset/annotations"><button class="btn" onclick="pickTrainDirectory('train_annotations_dir')">选择文件夹</button></div></div>
+          <div class="field full advanced-setting"><label>训练集 / 验证集比例：<span id="split_ratio_text">训练 80% / 验证 20%</span></label><input id="train_ratio_percent" type="range" min="1" max="100" step="1"><div class="mini">拖动条表示训练集占比，验证集占比自动为剩余比例；建议常用 80% / 20%。</div></div>
+          <div class="field advanced-setting"><label>基础模型</label><div class="input-action"><input id="base_model" placeholder="推荐 yolo11n.pt"><button class="btn" onclick="pickBaseModel()">选择模型</button></div><div class="mini">8GB 显存建议优先使用 yolo11n.pt。</div></div>
+
+          <div class="field advanced-setting"><label>Conda 环境（通常留空）</label><input id="conda_env"></div>
+          <div class="field advanced-setting"><label>PyTorch CUDA</label><select id="torch_cuda"><option value="cu128">CUDA 12.8（本机已安装）</option><option value="cu124">CUDA 12.4</option><option value="cu121">CUDA 12.1</option><option value="cu118">CUDA 11.8</option><option value="cpu">CPU 版 PyTorch</option><option value="none">不自动安装/更新 PyTorch</option></select></div>
+          <div class="field advanced-setting"><label>训练设备</label><div class="choice"><label><input name="train_device" type="radio" value="cuda"><span>GPU（推荐）</span></label><label><input name="train_device" type="radio" value="cpu"><span>CPU</span></label></div></div>
+          <div class="field advanced-setting"><label>数据缓存</label><select id="train_cache"><option value="False">关闭缓存（默认）</option><option value="True">缓存到内存</option><option value="disk">缓存到磁盘</option></select><div class="mini">内存足够时可加速训练；数据集较大建议选择磁盘或关闭。</div></div>
+          <div class="field advanced-setting"><label>项目名称</label><input id="project_name"></div>
+
+          <div class="field advanced-setting"><label>导出模型名称</label><input id="model_name"></div>
+          <div class="field sm advanced-setting"><label>图片宽度</label><input id="img_width" type="number" min="32" step="32" inputmode="numeric"></div>
+          <div class="field sm advanced-setting"><label>图片高度</label><input id="img_height" type="number" min="32" step="32" inputmode="numeric"></div>
+          <div class="field advanced-setting"><label>图片适配方式</label><select id="image_resize_mode"><option value="crop">裁剪（居中裁剪后缩放）</option><option value="letterbox">等比缩放（留边填充）</option><option value="stretch">拉伸（直接缩放）</option></select><div class="mini">会在生成训练集时同步变换图片与标注框；推荐使用等比缩放。</div></div>
+          <div class="field sm advanced-setting"><label>训练轮数</label><input id="epochs"><div class="mini">持续训练模式使用10000作为技术上限，通常由你手动停止。</div></div>
+          <div class="field sm advanced-setting"><label>批量大小</label><input id="batch"></div>
+          <div class="field sm advanced-setting"><label>初始学习率</label><input id="lr0"></div>
+          <div class="field sm advanced-setting"><label>数据加载进程</label><input id="train_workers" type="number" min="0" max="16" step="1"><div class="mini">RTX 4060 推荐4；0会让GPU频繁等待CPU。</div></div>
+          <div class="field sm advanced-setting"><label>自动早停</label><input id="patience" type="number" min="0" step="1"><div class="mini">0=关闭自动早停；当前默认由你手动决定何时停止。</div></div>
+          <div class="field full advanced-setting"><div class="onboarding"><div class="onboarding-head"><div><b>实际训练尺寸</b><span>宽高不同时自动启用 YOLO 矩形训练。640×480 输入将保持4:3张量，不再自动补成640×640。</span></div></div></div></div>
+          <div class="field advanced-setting"><label>导出算子模式</label><div class="choice"><label><input name="operator_mode" type="radio" value="recommended"><span>推荐算子</span></label><label><input name="operator_mode" type="radio" value="maixcam"><span>仅 MaixCAM 支持</span></label></div></div>
+          <div class="field advanced-setting"><label>训练位置</label><div class="choice"><label><input name="train_mode" type="radio" value="local"><span>本机训练</span></label><label><input name="train_mode" type="radio" value="remote-windows"><span>远程 Windows</span></label></div></div>
+          <div class="field advanced-setting"><label>Remote User</label><input id="remote_train_user" placeholder="如 Administrator"></div>
+          <div class="field advanced-setting"><label>Remote Host</label><input id="remote_train_host"></div>
+          <div class="field advanced-setting"><label>Remote Port</label><input id="remote_train_port"></div>
+          <div class="field advanced-setting"><label>Remote Work Dir</label><input id="remote_train_work_dir"></div>
+        </div>
+        <div class="train-board">
+          <div class="progress-card wide">
+            <div class="progress-head"><b>资源预估</b><span id="resource-note">配置变化后自动估算</span></div>
+            <div class="metrics-grid">
+              <div><span>训练图片</span><b id="estimate-images">-</b></div>
+              <div><span>内存</span><b id="estimate-ram">-</b></div>
+              <div><span>显存</span><b id="estimate-vram">-</b></div>
+              <div><span>Cache 额外</span><b id="estimate-cache">-</b></div>
+              <div><span>图片宽 × 高</span><b id="estimate-imgsz">-</b></div>
+              <div><span>Batch</span><b id="estimate-batch">-</b></div>
+            </div>
+            <div class="mini" id="resource-detail">估算值仅供参考，实际峰值会随模型、增强策略、驱动和环境波动。</div>
+          </div>
+        </div>
+        <div class="actions"><div class="btns"><button class="btn advanced-setting" onclick="runAction('train_ssh')">测试训练 SSH</button><button class="btn advanced-setting" onclick="copyCommand('train')">复制训练命令</button><button class="btn" onclick="saveDefaults('训练配置')">保存设置（重启保留）</button><button class="btn red" onclick="stopTrainExport()">停止训练并导出最佳模型</button></div><button id="start-train-button" class="btn green" onclick="runAction('train')">检查并开始训练</button></div>
+        <div class="train-board">
+
+          <div class="progress-card wide">
+            <div class="progress-head"><b>训练进度</b><span id="train-phase">等待开始</span></div>
+            <div class="bar"><div id="epoch-bar" style="width:0%"></div></div>
+            <div class="metrics-grid">
+              <div><span>Epoch</span><b id="epoch-text">-</b></div>
+              <div><span>Batch</span><b id="batch-text">-</b></div>
+              <div><span>GPU</span><b id="gpu-text">-</b></div>
+              <div><span>速度</span><b id="speed-text">-</b></div>
+              <div><span>耗时</span><b id="elapsed-text">-</b></div>
+              <div><span>剩余</span><b id="eta-text">-</b></div>
+            </div>
+          </div>
+          <div class="progress-card">
+            <div class="progress-head"><b>Loss</b><span id="loss-title">训练损失</span></div>
+            <div class="metrics-grid loss-grid">
+              <div id="loss-item"><span id="loss-label">loss</span><b id="loss-value">-</b></div>
+              <div id="box-loss-item"><span>box</span><b id="box-loss">-</b></div>
+              <div id="cls-loss-item"><span>cls</span><b id="cls-loss">-</b></div>
+              <div id="dfl-loss-item"><span>dfl</span><b id="dfl-loss">-</b></div>
+            </div>
+            <canvas id="loss-chart" width="520" height="180"></canvas>
+          </div>
+          <div class="progress-card">
+            <div class="progress-head"><b>验证指标</b><span id="val-text">-</span></div>
+            <div id="detect-metrics" class="metrics-grid loss-grid">
+              <div><span>Precision</span><b id="precision-text">-</b></div>
+              <div><span>Recall</span><b id="recall-text">-</b></div>
+              <div><span>mAP50</span><b id="map50-text">-</b></div>
+              <div><span>mAP50-95</span><b id="map5095-text">-</b></div>
+            </div>
+            <div id="classify-metrics" class="metrics-grid loss-grid" hidden>
+              <div><span>Top-1 Accuracy</span><b id="top1-text">-</b></div>
+              <div><span>Top-5 Accuracy</span><b id="top5-text">-</b></div>
+            </div>
+            <canvas id="metric-chart" width="520" height="180"></canvas>
+          </div>
+        </div>
+        <div class="cmd" id="cmd-train"></div>
+      </section>
+
+      <section id="tab-dataset" class="tab card section">
+        <h2>准备数据</h2>
+        <p class="hint">Roboflow/YOLO 导出的 <b>data.yaml + train/valid/test</b> 可直接导入，不需要 XML。旧式平铺 TXT 数据仍可转换。</p>
+        <div class="onboarding">
+          <div class="onboarding-head"><div><b>优先：直接导入下载目录</b><span>选择最外层文件夹，系统自动检查 data.yaml、图片、TXT 标签和原始数据划分，不复制也不改动文件。</span></div></div>
+        </div>
+        <div id="raw-dataset-summary" class="readiness" hidden></div>
+        <div class="grid">
+          <div class="field full"><label>原始数据集根目录</label><div class="input-action"><input id="raw_dataset_root" placeholder="例如 C:/Users/Rainy/Downloads/moxin"><button class="btn" onclick="pickRawDatasetRoot()">选择文件夹</button></div></div>
+          <div class="field"><label>图片目录（可自动识别）</label><input id="raw_images_dir" placeholder="例如 .../moxin/Main"></div>
+          <div class="field"><label>YOLO TXT 标签目录（可自动识别）</label><input id="raw_labels_dir" placeholder="例如 .../moxin/Main_labels"></div>
+          <div class="field full"><label>转换输出目录</label><input id="raw_output_dir" placeholder="留空则输出到原始目录/converted_voc"></div>
+          <div class="field full"><label>类别名称（按编号顺序，用逗号分隔）</label><input id="raw_class_names" placeholder="例如 product；多类别填写 product, defect, background"><div class="mini">如果留空，类别 0、1、2 会自动命名为 class_0、class_1、class_2。</div></div>
+          <div class="field full"><div class="choice"><label><input id="raw_overwrite" type="checkbox"><span>覆盖输出目录中的同名图片和 XML</span></label></div></div>
+        </div>
+        <div class="actions">
+          <div class="btns"><button class="btn" onclick="inspectRawDataset()">识别并检查</button></div>
+          <div class="btns"><button id="raw-import-button" class="btn green" onclick="importRawDataset()">直接导入训练配置</button><button id="raw-convert-button" class="btn advanced-setting" onclick="convertRawDataset()">旧式 TXT 转 XML</button></div>
+        </div>
+      </section>
+
+      <section id="tab-convert" class="tab card section">
+        <h2>模型转换</h2><p class="hint">训练结束后路径会自动回填。也可以手动填写已有 ONNX、classes.txt 和校准图片目录。</p>
+        <div class="grid">
+          <div class="field full"><label>ONNX Model</label><input id="model_path"></div>
+          <div class="field"><label>Classes</label><input id="classes_path"></div>
+          <div class="field"><label>Calib Images</label><input id="calib_dir"></div>
+          <div class="field"><label>Test Image</label><input id="test_image"></div>
+          <div class="field"><label>VM User</label><input id="vm_user"></div>
+          <div class="field"><label>VM Host/IP</label><input id="vm_host"></div>
+          <div class="field full"><label>VM Work Dir</label><input id="vm_work_dir"></div>
+          <div class="field full"><div class="choice"><label><input id="skip_vm_convert" type="checkbox"><span>只上传转换包，跳过 VM 转换</span></label></div></div>
+        </div>
+        <div class="actions"><div class="btns"><button class="btn" onclick="runAction('vm_ssh')">测试 VM SSH</button><button class="btn" onclick="copyCommand('convert')">复制转换命令</button><button class="btn" onclick="saveDefaults('模型转换')">存为默认</button></div><button class="btn blue" onclick="runAction('convert')">开始转换</button></div>
+        <div class="cmd" id="cmd-convert"></div>
+      </section>
+
+      <section id="tab-test" class="tab card section">
+        <h2>模型测试</h2><p class="hint">自动兼容目标检测与图像分类 `.pt` 模型。单张图片会保存带标注的预测图；文件夹测试会递归处理所有图片并输出预测图与 `predictions.csv`。</p>
+        <div class="grid">
+          <div class="field full"><label>Test Model .pt</label><input id="test_model"></div>
+          <div class="field full"><label>Source</label><div class="choice"><label><input name="test_source" type="radio" value="camera"><span>Camera</span></label><label><input name="test_source" type="radio" value="image"><span>单张图片</span></label><label><input name="test_source" type="radio" value="folder"><span>图片文件夹</span></label></div></div>
+          <div class="field full"><label>图片路径</label><div class="input-action"><input id="test_image_file" placeholder="选择单张图片时填写"><button class="btn" onclick="pickTestImage()">选择图片</button></div></div>
+          <div class="field full"><label>图片文件夹路径</label><div class="input-action"><input id="test_image_folder" placeholder="选择图片文件夹时填写，支持递归扫描"><button class="btn" onclick="pickTestImageFolder()">选择文件夹</button></div></div>
+          <div class="field full"><label>批量测试输出文件夹（可选）</label><div class="input-action"><input id="test_output_dir" placeholder="留空时输出到图片文件夹/predict_results"><button class="btn" onclick="pickTestOutputDir()">选择文件夹</button></div></div>
+          <div class="field"><label>Camera Index</label><input id="camera_index"></div>
+          <div class="field"><label>Confidence（仅检测模型生效）</label><input id="conf"></div>
+        </div>
+        <div class="actions"><button class="btn" onclick="copyCommand('test')">复制测试命令</button><button class="btn primary" onclick="runAction('test')">开始测试</button></div>
+        <div class="cmd" id="cmd-test"></div>
+      </section>
+
+      <section id="tab-label" class="tab card section">
+        <h2>自动跟踪标注</h2><p class="hint">支持连续视频或按文件名排序的图片集（适用于自行提取、筛选的视频帧）。图片集模式直接为原图生成同名 XML，不会复制或重编码图片；应保持图片顺序与视频时间顺序一致。</p>
+        <div class="grid">
+          <div class="field full"><label>标注来源</label><div class="choice"><label><input name="label_source_type" type="radio" value="video"><span>视频</span></label><label><input name="label_source_type" type="radio" value="camera"><span>摄像头</span></label><label><input name="label_source_type" type="radio" value="images"><span>图片集</span></label></div></div>
+        </div>
+        <div id="label-video-source" class="label-source">
+          <div class="grid">
+            <div class="field full"><label>Video Folder</label><input id="label_video_dir" placeholder="例如 D:/videos 或 E:/datasets/raw_videos"></div>
+          </div>
+          <div class="actions"><div class="btns"><button class="btn" onclick="pickLabelVideoDir()">选择视频文件夹</button><button class="btn blue" onclick="loadLabelVideos()">读取文件夹视频</button></div><div class="btns"><button class="btn" onclick="selectPrevVideo()">上一个</button><button class="btn" onclick="selectNextVideo()">下一个</button></div></div>
+          <div class="label-workspace">
+            <div class="panel">
+              <div class="queue-head"><h3>视频队列</h3><span class="count" id="label-video-count">0 个视频</span></div>
+              <div id="label-video-list" class="video-list"><div class="empty">填写 Video Folder 后点击“读取文件夹视频”。</div></div>
+              <div class="video-preview">
+                <div class="queue-head"><h3>视频预览</h3><span class="count" id="label-preview-name">未选择</span></div>
+                <div id="label-video-preview" class="video-preview-box"><span>选择左侧视频后显示首帧预览</span></div>
+              </div>
+            </div>
+            <div class="panel" id="label-video-config">
+              <h3>当前视频与标注参数</h3>
+              <div class="current-video"><span class="count">当前待标注视频</span><b id="label-current-video">未选择视频</b></div>
+              <div class="label-config">
+                <div class="field full"><label>Video Path</label><input id="label_video" placeholder="从队列选择，或手动输入视频文件路径"></div>
+                <div class="field"><label>Labels</label><input id="label_name" placeholder="多个标签用英文逗号分隔，如 w,person,car"></div>
+                <div class="field"><label>Filename Prefix</label><input id="label_prefix"></div>
+                <div class="field"><label>Images Dir</label><input id="label_images_dir"></div>
+                <div class="field"><label>Annotations Dir</label><input id="label_annotations_dir"></div>
+                <div class="field"><label>Tracker</label><select id="label_tracker"><option value="csrt">CSRT</option><option value="kcf">KCF</option><option value="mosse">MOSSE</option><option value="mil">MIL</option><option value="template">Template</option><option value="multi_template">Multi-template（多角度）</option></select></div>
+
+                <div class="field sm"><label>Save Every N Frames</label><input id="label_interval"></div>
+                <div class="field sm"><label>Start Frame</label><input id="label_start_frame"></div>
+                <div class="field sm"><label>Max Frames</label><input id="label_max_frames"></div>
+                <div class="field sm"><label>Display Scale</label><input id="label_display_scale"></div>
+                <div class="field sm"><label>JPEG Quality</label><input id="label_jpeg_quality"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div id="label-camera-source" class="label-source" hidden>
+          <div class="panel">
+            <h3>摄像头实时标注</h3>
+            <p class="hint">启动后会打开本机 OpenCV 标注窗口。确认实时画面后框选目标并选择类别，跟踪过程中会按保存间隔写入 JPEG 和同名 VOC XML；按 q 或 Esc 结束采集。</p>
+            <div class="label-config">
+              <div class="field"><label>Camera Index</label><input id="label_camera_index" placeholder="0"></div>
+              <div class="field"><label>Labels</label><input id="label_name_camera" placeholder="多个标签用英文逗号分隔，如 w,person,car"></div>
+              <div class="field"><label>Filename Prefix</label><input id="label_prefix_camera" placeholder="camera"></div>
+              <div class="field"><label>Images Dir</label><input id="label_images_dir_camera"></div>
+              <div class="field"><label>Annotations Dir</label><input id="label_annotations_dir_camera"></div>
+              <div class="field"><label>Tracker</label><select id="label_tracker_camera"><option value="csrt">CSRT</option><option value="kcf">KCF</option><option value="mosse">MOSSE</option><option value="mil">MIL</option><option value="template">Template</option><option value="multi_template">Multi-template（多角度）</option></select></div>
+              <div class="field sm"><label>Save Every N Frames</label><input id="label_interval_camera"></div>
+              <div class="field sm"><label>Max Frames</label><input id="label_max_frames_camera" placeholder="0 为持续采集"></div>
+              <div class="field sm"><label>Display Scale</label><input id="label_display_scale_camera"></div>
+              <div class="field sm"><label>JPEG Quality</label><input id="label_jpeg_quality_camera"></div>
+            </div>
+          </div>
+        </div>
+        <div id="label-images-source" class="label-source" hidden>
+          <div class="panel">
+            <h3>图片集与标注参数</h3>
+            <p class="hint">选择已按时间顺序命名的帧图片文件夹。将按文件名排序跟踪，原图保留不动，仅在标注目录生成同名 XML。</p>
+            <div class="label-config">
+              <div class="field full"><label>图片集文件夹</label><div class="input-action"><input id="label_images_input_dir" placeholder="例如 E:/datasets/selected_frames（支持 jpg、png、bmp、webp）"><button class="btn" onclick="pickLabelImagesDir()">选择文件夹</button></div></div>
+              <div class="field"><label>Labels</label><input id="label_name_images" placeholder="多个标签用英文逗号分隔，如 w,person,car"></div>
+              <div class="field"><label>Annotations Dir</label><input id="label_annotations_dir_images"></div>
+              <div class="field"><label>Tracker</label><select id="label_tracker_images"><option value="csrt">CSRT</option><option value="kcf">KCF</option><option value="mosse">MOSSE</option><option value="mil">MIL</option><option value="template">Template</option><option value="multi_template">Multi-template（多角度）</option></select></div>
+              <div class="field sm"><label>每 N 张保存</label><input id="label_interval_images"></div>
+              <div class="field sm"><label>起始图片序号</label><input id="label_start_frame_images"></div>
+              <div class="field sm"><label>最多处理图片</label><input id="label_max_frames_images"></div>
+              <div class="field sm"><label>显示缩放</label><input id="label_display_scale_images"></div>
+            </div>
+            <div class="quick-help"><div><b>1. 选择图片集</b>选择已筛选并按时间顺序命名的帧图片。</div><div><b>2. 开始标注</b>在首张图片框选目标并选择类别。</div><div><b>3. 修正跟踪</b>目标丢失后按 r 修正当前框。</div><div><b>4. 保存结果</b>每张原图对应同名 XML，原图不会被删除。</div></div>
+          </div>
+        </div>
+        <div id="label-browser-studio" class="label-studio panel" hidden>
+          <div class="queue-head"><div><h3>网页标注工作台</h3><span class="count" id="label-session-tip">创建会话后，在画面上拖动鼠标框选目标。</span></div><button class="btn red" onclick="endBrowserLabelSession()">结束标注</button></div>
+          <div class="label-studio-grid">
+            <div>
+              <div id="label-stage" class="label-stage empty-stage"><span>选择来源并点击“在网页中开始标注”后，此处显示实时画面。</span><img id="label-frame-image" hidden alt="当前标注画面"><canvas id="label-frame-canvas" hidden></canvas></div>
+              <div id="label-session-status" class="label-status"></div>
+              <div class="actions"><div class="btns"><button class="btn green" id="label-play-button" onclick="toggleBrowserLabelPlay()">播放跟踪</button><button class="btn" onclick="advanceBrowserLabelFrame()">下一帧</button><button class="btn" onclick="saveBrowserLabelFrame()">保存当前帧</button></div><div class="btns"><button class="btn" onclick="setLabelDrawMode('add')">添加框</button><button class="btn" onclick="setLabelDrawMode('edit')">修正选中框</button><button class="btn" onclick="setLabelDrawMode('sample')">追加选中目标视角</button><button class="btn red" onclick="deleteBrowserLabelObject()">删除选中框</button></div></div>
+              <div class="label-help">多角度模式：选择 Multi-template，暂停到新角度后选中目标，点击“追加选中目标视角”并重画该目标。它会保留已有参考图；“修正选中框”会重置参考图。</div>
+            </div>
+            <div class="panel"><h3>当前目标</h3><div id="label-object-list" class="label-object-list"><div class="empty">尚未框选目标。</div></div></div>
+          </div>
+        </div>
+        <div class="actions"><div class="btns"><button class="btn" onclick="copyCommand('label')">复制当前命令</button><button class="btn" onclick="saveDefaults('自动跟踪标注')">存为默认</button></div><div class="btns"><button class="btn" onclick="loadLabelResults()">刷新标注结果</button><button class="btn primary" id="label-start-button" onclick="runLabelCurrent()">在网页中开始标注</button></div></div>
+        <div class="cmd" id="cmd-label"></div>
+        <h2 style="margin-top:24px">标注结果</h2><p class="hint">这里显示当前标注样本。视频模式下“删除废图”会同时删除导出图片和 XML；图片集模式下仅删除 XML，保留用户原始图片。</p>
+        <div id="label-results" class="gallery"></div>
+
+      </section>
+
+
+      <section id="tab-logs" class="tab card section">
+        <h2>运行日志</h2><p class="hint">这里实时显示训练、转换、SSH 测试、模型测试和视频打标输出。</p>
+        <div class="actions"><div class="btns"><button class="btn" onclick="refreshState()">刷新</button><button class="btn" onclick="copyLogs()">复制日志</button></div><button class="btn red" onclick="stopJob()">停止当前任务</button></div>
+        <div class="log" id="log"></div>
+      </section>
+
+    </main>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+<script>
+const fields=['dataset_root','train_task','train_images_dir','train_annotations_dir','prepared_dataset_yaml','train_ratio_percent','img_width','img_height','image_resize_mode','epochs','batch','train_workers','patience','lr0','conda_env','base_model','torch_cuda','train_cache','raw_dataset_root','raw_images_dir','raw_labels_dir','raw_output_dir','raw_class_names','project_name','model_name','remote_train_user','remote_train_host','remote_train_port','remote_train_work_dir','model_path','classes_path','calib_dir','test_image','vm_user','vm_host','vm_work_dir','test_model','test_image_file','test_image_folder','test_output_dir','camera_index','conf','label_video_dir','label_video','label_camera_index','label_source_type','label_images_input_dir','label_name','label_interval','label_images_dir','label_annotations_dir','label_prefix','label_tracker','label_start_frame','label_max_frames','label_display_scale','label_jpeg_quality'];
+
+
+
+let values={};
+let labelVideos=[];
+let labelVideoIndex=-1;
+let labelVisibleCount=150;
+const LABEL_VIDEO_PAGE_SIZE=150;
+let labelPreviewToken=0;
+let labelResultsTimer=null;
+let resourceEstimateTimer=null;
+let lastResourceEstimateKey='';
+let deleteConfirmUntil=0;
+
+
+const rawLabelPrefix={manual:false,value:''};
+function toast(msg){const el=document.getElementById('toast');el.textContent=msg;el.classList.add('show');setTimeout(()=>el.classList.remove('show'),2600)}
+function updateSplitRatio(){const el=document.getElementById('train_ratio_percent'); const text=document.getElementById('split_ratio_text'); if(!el||!text) return; let train=Math.round(Number(el.value||80)); if(!Number.isFinite(train)) train=80; train=Math.max(1,Math.min(100,train)); if(String(train)!==el.value) el.value=String(train); text.textContent=`训练 ${train}% / 验证 ${100-train}%`}
+function fmt(v,d=3){return v===null||v===undefined||v===''||Number.isNaN(Number(v))?'-':Number(v).toFixed(d).replace(/\.0+$/,'').replace(/(\.\d*?)0+$/,'$1')}
+function setText(id,value){const el=document.getElementById(id); if(el) el.textContent=value}
+function drawChart(id,history,series){const canvas=document.getElementById(id); if(!canvas) return; const ctx=canvas.getContext('2d'); const w=canvas.width,h=canvas.height; ctx.clearRect(0,0,w,h); ctx.fillStyle='#fffafa'; ctx.fillRect(0,0,w,h); const rows=(history||[]).filter(x=>series.some(s=>x[s.key]!==null&&x[s.key]!==undefined)); ctx.strokeStyle='rgba(128,80,80,.12)'; ctx.lineWidth=1; for(let i=1;i<4;i++){const y=i*h/4; ctx.beginPath(); ctx.moveTo(34,y); ctx.lineTo(w-10,y); ctx.stroke()} if(rows.length<2){ctx.fillStyle='#8b7474'; ctx.font='13px sans-serif'; ctx.fillText('等待更多 epoch 数据...',18,34); return} let vals=[]; for(const r of rows){for(const s of series){const v=Number(r[s.key]); if(Number.isFinite(v)) vals.push(v)}} let min=Math.min(...vals),max=Math.max(...vals); if(min===max){min-=1;max+=1} const pad=(max-min)*0.08; min-=pad; max+=pad; const xOf=i=>34+i*(w-48)/Math.max(1,rows.length-1); const yOf=v=>h-22-(Number(v)-min)*(h-42)/(max-min); ctx.font='11px sans-serif'; series.forEach((s,si)=>{ctx.strokeStyle=s.color; ctx.lineWidth=2; ctx.beginPath(); let started=false; rows.forEach((r,i)=>{const v=Number(r[s.key]); if(!Number.isFinite(v)) return; const x=xOf(i),y=yOf(v); if(!started){ctx.moveTo(x,y); started=true}else ctx.lineTo(x,y)}); ctx.stroke(); ctx.fillStyle=s.color; ctx.fillText(s.label,38+si*82,16)}); ctx.fillStyle='#806e6e'; ctx.fillText(`E${rows[0].epoch}`,34,h-7); ctx.fillText(`E${rows[rows.length-1].epoch}`,w-52,h-7)}
+function updateTrainProgress(p){p=p||{}; const task=p.task||document.querySelector('input[name="train_task"]:checked')?.value||'detect'; const classify=task==='classify'; const pct=Math.max(0,Math.min(100,Number(p.percent||0))); const totalEpochs=Number(p.total_epochs||0); const epoch=Number(p.epoch||0); const totalBatches=Number(p.total_batches||0); const batch=Number(p.batch||0); const phaseMap={idle:'等待开始',pending:'准备训练',train:'训练中',val:'验证中',metrics:'指标已更新',export:'正在停止训练并导出'}; setText('train-phase',`${phaseMap[p.phase]||p.phase||'等待开始'}${p.updated_at?' · '+p.updated_at:''}`); const bar=document.getElementById('epoch-bar'); if(bar) bar.style.width=pct+'%'; setText('epoch-text',epoch&&totalEpochs?`${epoch}/${totalEpochs}`:'-'); setText('batch-text',totalBatches?`${batch}/${totalBatches} (${fmt(pct,1)}%)`:'-'); setText('gpu-text',p.gpu_mem||'-'); const speedNumber=parseFloat(String(p.speed||'')); const configuredBatch=Math.max(1,Number(values.batch||1)); setText('speed-text',Number.isFinite(speedNumber)?`${p.speed} · ≈${fmt(speedNumber*configuredBatch,1)}图/秒`:(p.speed||'-')); setText('elapsed-text',p.elapsed||'-'); setText('eta-text',p.eta||'-'); const lossItem=document.getElementById('loss-item'); const boxItem=document.getElementById('box-loss-item'); const clsItem=document.getElementById('cls-loss-item'); const dflItem=document.getElementById('dfl-loss-item'); if(lossItem) lossItem.hidden=!classify; if(boxItem) boxItem.hidden=classify; if(clsItem) clsItem.hidden=classify; if(dflItem) dflItem.hidden=classify; setText('loss-title',classify?'分类训练损失':'检测训练损失'); setText('loss-value',fmt(p.loss)); setText('box-loss',fmt(p.box_loss)); setText('cls-loss',fmt(p.cls_loss)); setText('dfl-loss',fmt(p.dfl_loss)); const detectMetrics=document.getElementById('detect-metrics'); const classifyMetrics=document.getElementById('classify-metrics'); if(detectMetrics) detectMetrics.hidden=classify; if(classifyMetrics) classifyMetrics.hidden=!classify; const m=p.metrics||{}; setText('val-text',p.val_total?`${p.val_batch||0}/${p.val_total} (${fmt(p.val_percent||0,1)}%)`:'-'); setText('precision-text',fmt(m.precision)); setText('recall-text',fmt(m.recall)); setText('map50-text',fmt(m.map50)); setText('map5095-text',fmt(m.map50_95)); setText('top1-text',fmt(m.top1_acc)); setText('top5-text',fmt(m.top5_acc)); const lossSeries=classify?[{key:'loss',label:'loss',color:'#dc7a32'}]:[{key:'box_loss',label:'box',color:'#d92f2f'},{key:'cls_loss',label:'cls',color:'#ef6b68'},{key:'dfl_loss',label:'dfl',color:'#a64f4f'}]; const metricSeries=classify?[{key:'top1_acc',label:'Top-1',color:'#21885a'},{key:'top5_acc',label:'Top-5',color:'#d92f2f'}]:[{key:'precision',label:'P',color:'#21885a'},{key:'recall',label:'R',color:'#d92f2f'},{key:'map50',label:'mAP50',color:'#dc7a32'},{key:'map50_95',label:'mAP50-95',color:'#a64f4f'}]; drawChart('loss-chart',p.history||[],lossSeries); drawChart('metric-chart',p.history||[],metricSeries)}
+function updatePreparedDatasetUI(){const active=!!String(values.prepared_dataset_yaml||'').trim(); const banner=document.getElementById('prepared-dataset-banner'); const annotations=document.getElementById('annotations-field'); const split=document.getElementById('train_ratio_percent')?.closest('.field'); if(banner){banner.hidden=!active; banner.innerHTML=active?`<div class="check-item ok"><span class="check-icon">✓</span><b>已直接导入 YOLO 数据集</b><span class="check-detail">${values.prepared_dataset_yaml}；沿用原 train / valid / test，不需要 XML，也不会重新随机划分。</span></div>`:''} if(annotations) annotations.hidden=active||(document.querySelector('input[name="train_task"]:checked')?.value||'detect')==='classify'; if(split) split.hidden=active||!document.body.classList.contains('show-advanced')}
+function updateTrainTaskUI(){const task=document.querySelector('input[name="train_task"]:checked')?.value||'detect'; const annotations=document.getElementById('annotations-field'); const hint=document.getElementById('train-task-hint'); const prepared=!!String(values.prepared_dataset_yaml||'').trim(); if(annotations) annotations.hidden=task==='classify'||prepared; if(hint) hint.textContent=task==='classify'?'分类数据集结构：Images Dir/类别名/图片。每个类别至少 2 张图片；Annotations Dir 不参与分类训练；Base Model 请使用分类权重，例如 yolo11n-cls.pt。':prepared?'已导入标准 YOLO 数据集，将直接使用 TXT 标签和原始 train/valid/test 划分。':'检测数据集结构：可直接导入 data.yaml 数据集，或使用同名图片 + VOC XML。'; updatePreparedDatasetUI()}
+function syncLabelFields(prefix,toCanonical){const pairs=prefix==='camera'?[['label_name_camera','label_name'],['label_prefix_camera','label_prefix'],['label_images_dir_camera','label_images_dir'],['label_annotations_dir_camera','label_annotations_dir'],['label_tracker_camera','label_tracker'],['label_interval_camera','label_interval'],['label_max_frames_camera','label_max_frames'],['label_display_scale_camera','label_display_scale'],['label_jpeg_quality_camera','label_jpeg_quality']]:[['label_name_images','label_name'],['label_annotations_dir_images','label_annotations_dir'],['label_tracker_images','label_tracker'],['label_interval_images','label_interval'],['label_start_frame_images','label_start_frame'],['label_max_frames_images','label_max_frames'],['label_display_scale_images','label_display_scale']]; for(const [sourceId,canonicalId] of pairs){const from=document.getElementById(toCanonical?sourceId:canonicalId); const to=document.getElementById(toCanonical?canonicalId:sourceId); if(from&&to) to.value=from.value}}
+function updateLabelSourceUI(){const source=document.querySelector('input[name="label_source_type"]:checked')?.value||'video'; const video=document.getElementById('label-video-source'); const camera=document.getElementById('label-camera-source'); const images=document.getElementById('label-images-source'); const start=document.getElementById('label-start-button'); if(video) video.hidden=source!=='video'; if(camera) camera.hidden=source!=='camera'; if(images) images.hidden=source!=='images'; if(source==='camera') syncLabelFields('camera',false); if(source==='images') syncLabelFields('images',false); if(start) start.textContent=source==='camera'?'在网页中开始摄像头标注':source==='images'?'在网页中开始图片集标注':'在网页中开始视频标注'}
+function collect(){const source=document.querySelector('input[name="label_source_type"]:checked')?.value||'video'; if(source==='camera') syncLabelFields('camera',true); if(source==='images') syncLabelFields('images',true); for(const id of fields){const el=document.getElementById(id); if(el) values[id]=el.value} values.skip_vm_convert=document.getElementById('skip_vm_convert').checked; values.raw_overwrite=!!document.getElementById('raw_overwrite')?.checked; for(const n of ['operator_mode','train_mode','train_device','train_task','test_source','label_source_type']){const el=document.querySelector(`input[name="${n}"]:checked`); if(el) values[n]=el.value} return values}
+function resourceEstimateKey(v){return [v.train_task||'detect',v.train_images_dir||'',v.base_model||'',v.img_width||'',v.img_height||'',v.image_resize_mode||'',v.batch||'',v.train_cache||'',v.train_device||''].join('|')}
+function showResourceEstimate(e){e=e||{}; setText('estimate-images',e.image_count!==undefined?`${e.image_count} 张`:'-'); setText('estimate-ram',e.ram_text||'-'); setText('estimate-vram',e.vram_text||'-'); setText('estimate-cache',e.cache_text||'-'); setText('estimate-imgsz',e.img_size||'-'); setText('estimate-batch',e.batch||'-'); const riskMap={safe:'资源预估',warning:'资源预估 · 警告',danger:'资源预估 · 风险'}; const model=e.model_size?` · YOLO-${e.model_size}`:''; setText('resource-note',`${riskMap[e.risk]||'资源预估'}${model} · cache=${e.cache_mode||'-'}`); setText('resource-detail',e.note||'估算值仅供参考，实际峰值会随模型、增强策略、驱动和环境波动。')}
+async function updateResourceEstimate(){try{const v=collect(); const key=resourceEstimateKey(v); if(key===lastResourceEstimateKey) return; lastResourceEstimateKey=key; setText('resource-note','正在估算...'); const j=await api('/api/train-estimate',{values:v}); showResourceEstimate(j.estimate||{})}catch(e){setText('resource-note','估算失败'); setText('resource-detail',e.message)}}
+function scheduleResourceEstimate(){clearTimeout(resourceEstimateTimer); resourceEstimateTimer=setTimeout(updateResourceEstimate,450)}
+function apply(v){const before=JSON.stringify(values); values={...values,...v}; for(const id of fields){const el=document.getElementById(id); if(el && document.activeElement!==el && values[id]!==undefined && el.value!==String(values[id])) el.value=values[id]} updateSplitRatio(); document.getElementById('skip_vm_convert').checked=!!values.skip_vm_convert; const rawOverwrite=document.getElementById('raw_overwrite'); if(rawOverwrite) rawOverwrite.checked=!!values.raw_overwrite; for(const n of ['operator_mode','train_mode','train_device','train_task','test_source','label_source_type']){if(values[n]!==undefined){const el=document.querySelector(`input[name="${n}"][value="${values[n]}"]`); if(el && document.activeElement!==el) el.checked=true}} updateTrainTaskUI(); updatePreparedDatasetUI(); updateLabelSourceUI(); updateCurrentVideo(); if(JSON.stringify(values)!==before) updateCommands(); scheduleResourceEstimate()}
+
+
+function setConnectionState(online){const badge=document.getElementById('connectionBadge'); if(!badge) return; badge.classList.toggle('offline',!online); const text=badge.querySelector('span:last-child'); if(text) text.textContent=online?'面板已连接 · 本机端口 8989':'面板连接已断开 · 请运行启动脚本'}
+async function api(path,body){let r; try{r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})})}catch(e){setConnectionState(false);throw new Error('无法连接训练面板。请双击 start_train_panel.cmd 后刷新页面。')} setConnectionState(true); let j; try{j=await r.json()}catch(e){throw new Error(`面板返回了无法解析的结果（HTTP ${r.status}）`)} if(!r.ok||j.error) throw new Error(j.error||r.statusText); return j}
+let valuesSaveQueue=Promise.resolve();
+function saveValues(){const snapshot={...collect()}; valuesSaveQueue=valuesSaveQueue.then(()=>api('/api/values',{values:snapshot})).catch(()=>{}); return valuesSaveQueue}
+async function saveDefaults(scope){const snapshot={...collect()}; try{await valuesSaveQueue; const j=await api('/api/defaults',{values:snapshot}); apply(j.values||{}); toast(`${scope||'当前配置'}已保存为默认`)}catch(e){toast(e.message)}}
+async function command(action){const j=await api('/api/command',{action,values:collect()}); return j.command}
+async function updateCommands(){try{document.getElementById('cmd-train').textContent=await command('train');document.getElementById('cmd-convert').textContent=await command('convert');document.getElementById('cmd-test').textContent=await command('test');document.getElementById('cmd-label').textContent=await command('label')}catch(e){}}
+function setInputValue(id,value){const el=document.getElementById(id); if(el){el.value=value; values[id]=value}}
+function toggleAdvancedSettings(){const show=!document.body.classList.contains('show-advanced'); document.body.classList.toggle('show-advanced',show); localStorage.setItem('myAutoTrainAdvanced',show?'1':'0'); setText('advanced-toggle',show?'收起更多设置':'更多设置')}
+function applyTrainPreset(name){const task=document.querySelector('input[name="train_task"]:checked')?.value||'detect'; const recommendedBatch=String(values.batch||'16'),recommendedWorkers=String(values.train_workers||'4'); const presets={smoke:{epochs:'5',batch:'8',train_workers:'2',patience:'0',img_width:'640',img_height:'480',image_resize_mode:'letterbox',train_cache:'False'},camera4060:{epochs:'10000',batch:recommendedBatch,train_workers:recommendedWorkers,patience:'0',img_width:'640',img_height:'480',image_resize_mode:'letterbox',train_cache:'disk',lr0:'0.005'},balanced:{epochs:'100',batch:recommendedBatch,train_workers:recommendedWorkers,patience:'0',img_width:'640',img_height:'480',image_resize_mode:'letterbox',train_cache:'disk'},quality:{epochs:'10000',batch:recommendedBatch,train_workers:recommendedWorkers,patience:'0',img_width:'640',img_height:'480',image_resize_mode:'letterbox',train_cache:'disk'}}; const preset=presets[name]||presets.camera4060; for(const [key,value] of Object.entries(preset)) setInputValue(key,value); const model=document.getElementById('base_model'); if(model&&!model.value.trim()) setInputValue('base_model',task==='classify'?'yolo11n-cls.pt':'yolo11n.pt'); saveValues(); updateCommands(); scheduleResourceEstimate(); document.getElementById('train-readiness').hidden=true; toast(name==='smoke'?'已应用640×480首次验证配置':name==='camera4060'?'已应用本机推荐的640×480配置，由你手动停止':name==='quality'?'已应用640×480持续高质量配置，由你手动停止':'已应用推荐配置')}
+function renderTrainChecks(result){const box=document.getElementById('train-readiness'); if(!box) return; box.hidden=false; box.innerHTML=''; for(const check of result.checks||[]){const item=document.createElement('div'); item.className='check-item '+check.status; const icon=document.createElement('span'); icon.className='check-icon'; icon.textContent=check.status==='ok'?'✓':check.status==='warn'?'!':'×'; const label=document.createElement('b'); label.textContent=check.label; const detail=document.createElement('span'); detail.className='check-detail'; detail.textContent=check.detail; item.append(icon,label,detail); box.appendChild(item)}}
+async function checkTrainReady(showMessage=false){try{const result=await api('/api/train-check',{values:collect()}); renderTrainChecks(result); if(showMessage||!result.ready) toast(result.summary); return result.ready}catch(e){renderTrainChecks({checks:[{label:'面板检查',status:'error',detail:e.message}]}); toast(e.message); return false}}
+async function pickTrainDirectory(field){try{const j=await api('/api/pick-train-directory',{field,values:collect()}); if(!j.path){toast('未选择文件夹');return} setInputValue(field,j.path); if(field==='train_images_dir'||field==='train_annotations_dir'){setInputValue('prepared_dataset_yaml',''); updatePreparedDatasetUI()} if(field==='train_images_dir'&&!String(values.dataset_root||'').trim()){const parent=j.path.replace(/[\\/][^\\/]+[\\/]?$/,''); if(parent) setInputValue('dataset_root',parent)} await saveValues(); updateCommands(); scheduleResourceEstimate(); document.getElementById('train-readiness').hidden=true}catch(e){toast(e.message)}}
+function renderRawDatasetSummary(info,converted=false){const box=document.getElementById('raw-dataset-summary'); if(!box) return; box.hidden=false; box.innerHTML=''; const classes=(info.class_names||[]).map((name,index)=>`${index}=${name}`).join('，')||'尚未识别'; const warnings=[]; if(info.images_without_labels) warnings.push(`${info.images_without_labels} 张图片没有标签`); if(info.labels_without_images) warnings.push(`${info.labels_without_images} 个标签没有图片`); if(info.empty_labels) warnings.push(`${info.empty_labels} 个空标签`); if(info.invalid_lines) warnings.push(`${info.invalid_lines} 行格式无效`); let layout=`图片：${info.images_dir}；标签：${info.labels_dir}`; if(info.format==='yolo-split'){layout=Object.entries(info.splits||{}).map(([name,item])=>`${name} ${item.matched_count} 对`).join(' / '); warnings.push('将保留原 train / valid / test，不重新划分')} const checks=[{status:'ok',label:info.format==='yolo-split'?'标准 YOLO 数据集':'目录识别',detail:layout},{status:info.matched_count?'ok':'error',label:'图片/标签匹配',detail:`${info.image_count} 张图片，${info.label_count} 个 TXT，${info.matched_count} 对同名文件`},{status:info.box_count?'ok':'error',label:'检测框与类别',detail:`${info.box_count} 个框；${classes}`},{status:warnings.length?'warn':'ok',label:'数据提醒',detail:warnings.length?warnings.join('；'):'没有发现缺失或无效文件'},{status:'ok',label:converted?'转换完成':info.format==='yolo-split'?'可直接导入':'转换输出',detail:converted?`${info.converted_count} 张图片、${info.boxes_written} 个框已生成；${info.output_dir}`:info.format==='yolo-split'?`${info.yaml_path}；无需 XML`:info.output_dir}]; if(converted&&info.skipped_existing) checks.push({status:'warn',label:'已存在文件',detail:`${info.skipped_existing} 对文件未覆盖；勾选“覆盖同名文件”可重新生成`}); for(const check of checks){const item=document.createElement('div'); item.className='check-item '+check.status; const icon=document.createElement('span'); icon.className='check-icon'; icon.textContent=check.status==='ok'?'✓':check.status==='warn'?'!':'×'; const label=document.createElement('b'); label.textContent=check.label; const detail=document.createElement('span'); detail.className='check-detail'; detail.textContent=check.detail; item.append(icon,label,detail); box.appendChild(item)}}
+async function pickRawDatasetRoot(importNow=false){try{const j=await api('/api/pick-raw-dataset-root',{values:collect()}); if(!j.path){toast('未选择文件夹');return} setInputValue('raw_dataset_root',j.path); setInputValue('raw_images_dir',''); setInputValue('raw_labels_dir',''); setInputValue('raw_output_dir',''); await inspectRawDataset(); if(importNow) await importRawDataset()}catch(e){toast(e.message)}}
+async function inspectRawDataset(){try{const j=await api('/api/dataset-convert/inspect',{values:collect()}); const info=j.info||{}; setInputValue('raw_images_dir',info.images_dir||''); setInputValue('raw_labels_dir',info.labels_dir||''); setInputValue('raw_output_dir',info.output_dir||''); if(!String(document.getElementById('raw_class_names')?.value||'').trim()&&info.class_names?.length) setInputValue('raw_class_names',info.class_names.join(', ')); renderRawDatasetSummary(info,false); await saveValues(); toast(`已识别 ${info.matched_count||0} 对图片和标签`)}catch(e){renderRawDatasetSummary({images_dir:'-',labels_dir:'-',image_count:0,label_count:0,matched_count:0,box_count:0,class_names:[],output_dir:'-',invalid_lines:1},false); toast(e.message)}}
+async function importRawDataset(){const button=document.getElementById('raw-import-button'); if(button){button.disabled=true;button.textContent='正在导入...'} try{const j=await api('/api/dataset-import/run',{values:collect()}); apply(j.values||{}); renderRawDatasetSummary(j.result||{},false); await saveValues(); updateCommands(); scheduleResourceEstimate(); toast('已直接导入，保留原数据划分且无需 XML')}catch(e){toast(e.message)}finally{if(button){button.disabled=false;button.textContent='直接导入训练配置'}}}
+async function convertRawDataset(){const button=document.getElementById('raw-convert-button'); if(button){button.disabled=true;button.textContent='正在转换...'} try{const j=await api('/api/dataset-convert/run',{values:collect()}); apply(j.values||{}); renderRawDatasetSummary(j.result||{},true); await saveValues(); updateCommands(); scheduleResourceEstimate(); toast('转换完成，训练目录已经自动填入')}catch(e){toast(e.message)}finally{if(button){button.disabled=false;button.textContent='转换并填入训练配置'}}}
+async function pickBaseModel(){try{const j=await api('/api/pick-base-model',{values:collect()}); if(j.path){setInputValue('base_model',j.path); await saveValues(); updateCommands(); scheduleResourceEstimate(); document.getElementById('train-readiness').hidden=true}else toast('未选择模型')}catch(e){toast(e.message)}}
+function videoPrefix(video){return video.stem.replace(/[^\w\u4e00-\u9fa5-]+/g,'_').replace(/^_+|_+$/g,'')||'track'}
+function videoUrl(video,path='/api/video-file'){return `${path}?path=${encodeURIComponent(video.path)}&t=${Date.now()}`}
+function videoSizeText(video){const size=Number(video.size||0); if(!size) return ''; const units=['B','KB','MB','GB','TB']; let n=size,i=0; while(n>=1024&&i<units.length-1){n/=1024;i++} return `${n>=10||i===0?n.toFixed(0):n.toFixed(1)} ${units[i]}`}
+function updateVideoPreview(video){const box=document.getElementById('label-video-preview'); const name=document.getElementById('label-preview-name'); if(!box||!name) return; const token=++labelPreviewToken; box.classList.remove('clickable'); box.onclick=null; if(!video){name.textContent='未选择'; box.innerHTML='<span>选择左侧视频后显示首帧预览</span>'; return} name.textContent=video.name; box.classList.add('clickable'); box.innerHTML=`<img src="${videoUrl(video,'/api/video-preview')}" alt="" loading="eager"><div class="play-overlay"><div class="play-button">▶</div></div>`; const img=box.querySelector('img'); if(img){img.onerror=()=>{if(token!==labelPreviewToken) return; box.classList.remove('clickable'); box.onclick=null; box.innerHTML='<span>首帧预览读取失败：可能是视频编码不受当前 OpenCV 支持，但仍可尝试开始标注。</span>'}} box.onclick=()=>playVideoPreview(video)}
+function playVideoPreview(video){const box=document.getElementById('label-video-preview'); if(!box) return; ++labelPreviewToken; box.classList.remove('clickable'); box.onclick=null; box.innerHTML=`<video src="${videoUrl(video)}" controls playsinline preload="metadata"></video>`; const player=box.querySelector('video'); if(player){player.onerror=()=>{box.innerHTML='<span>浏览器无法直接播放该视频编码或容器格式；仍可尝试通过网页标注工作台读取并标注。</span>'}; player.play().catch(()=>{})}}
+function updateCurrentVideo(){const cur=document.getElementById('label-current-video'); if(!cur) return; const val=(document.getElementById('label_video')?.value||values.label_video||'').trim(); if(labelVideos.length){const matched=labelVideos.findIndex(v=>v.path===val); if(matched!==labelVideoIndex){labelVideoIndex=matched; renderLabelVideos(); updateVideoPreview(labelVideos[labelVideoIndex]||null); return}} cur.textContent=val||'未选择视频'; if(!labelVideos.length) updateVideoPreview(null)}
+function renderLabelVideos(){const list=document.getElementById('label-video-list'); const count=document.getElementById('label-video-count'); if(!list||!count) return; const done=labelVideos.filter(v=>v.done).length; const visible=Math.min(labelVisibleCount,labelVideos.length); count.textContent=labelVideos.length?`${done}/${labelVideos.length} 已完成 · 显示 ${visible} 个`:'0 个视频'; list.innerHTML=''; if(!labelVideos.length){list.innerHTML='<div class="empty">当前文件夹没有找到视频。支持 mp4、avi、mov、mkv、wmv、webm 等格式。</div>'; const cur=document.getElementById('label-current-video'); if(cur) cur.textContent=(document.getElementById('label_video')?.value||values.label_video||'').trim()||'未选择视频'; updateVideoPreview(null); return} const fragment=document.createDocumentFragment(); labelVideos.slice(0,visible).forEach((video,idx)=>{const btn=document.createElement('button'); btn.className='video-item'+(idx===labelVideoIndex?' active':'')+(video.done?' done':''); const status=video.done?'已完成':'待标注'; const size=videoSizeText(video); btn.innerHTML=`<b>${idx+1}. ${video.name}</b><span>${status}${size?' · '+size:''} · ${video.rel}</span>`; btn.onclick=()=>selectLabelVideo(idx); fragment.appendChild(btn)}); list.appendChild(fragment); if(visible<labelVideos.length){const more=document.createElement('button'); more.className='video-item'; more.innerHTML=`<b>加载更多视频</b><span>继续显示 ${Math.min(LABEL_VIDEO_PAGE_SIZE,labelVideos.length-visible)} 个，剩余 ${labelVideos.length-visible} 个</span>`; more.onclick=()=>{labelVisibleCount=Math.min(labelVisibleCount+LABEL_VIDEO_PAGE_SIZE,labelVideos.length); renderLabelVideos()}; list.appendChild(more)} const cur=document.getElementById('label-current-video'); const video=labelVideos[labelVideoIndex]; if(cur){cur.textContent=video?video.path:((document.getElementById('label_video')?.value||values.label_video||'').trim()||'未选择视频')}}
+function selectLabelVideo(index){if(index<0||index>=labelVideos.length) return; labelVideoIndex=index; if(index>=labelVisibleCount){labelVisibleCount=Math.min(labelVideos.length,Math.ceil((index+1)/LABEL_VIDEO_PAGE_SIZE)*LABEL_VIDEO_PAGE_SIZE)} const video=labelVideos[index]; setInputValue('label_video',video.path); if(!rawLabelPrefix.manual){setInputValue('label_prefix',videoPrefix(video))} renderLabelVideos(); updateVideoPreview(video); saveValues(); updateCommands()}
+async function loadLabelVideos(){try{await saveValues(); const list=document.getElementById('label-video-list'); if(list) list.innerHTML='<div class="empty">正在读取视频文件夹，请稍候...</div>'; const r=await fetch('/api/label-videos'); const j=await r.json(); if(j.error) throw new Error(j.error); labelVideos=j.items||[]; labelVisibleCount=LABEL_VIDEO_PAGE_SIZE; const current=(document.getElementById('label_video')?.value||'').trim(); labelVideoIndex=labelVideos.findIndex(v=>v.path===current); if(labelVideoIndex<0&&labelVideos.length) labelVideoIndex=0; if(labelVideos.length) selectLabelVideo(labelVideoIndex); else renderLabelVideos(); toast(`已读取 ${labelVideos.length} 个视频${labelVideos.length>=2000?'，已自动限制前 2000 个':''}`)}catch(e){toast(e.message)}}
+
+async function pickTestImage(){try{const j=await api('/api/pick-test-image',{values:collect()}); if(j.path){setInputValue('test_image_file',j.path); await saveValues(); updateCommands()}else{toast('未选择图片')}}catch(e){toast(e.message)}}
+async function pickTestImageFolder(){try{const j=await api('/api/pick-test-image-folder',{values:collect()}); if(j.path){setInputValue('test_image_folder',j.path); await saveValues(); updateCommands()}else{toast('未选择文件夹')}}catch(e){toast(e.message)}}
+async function pickTestOutputDir(){try{const j=await api('/api/pick-test-output-dir',{values:collect()}); if(j.path){setInputValue('test_output_dir',j.path); await saveValues(); updateCommands()}else{toast('未选择文件夹')}}catch(e){toast(e.message)}}
+async function pickLabelVideoDir(){try{const j=await api('/api/pick-label-video-dir',{values:collect()}); if(j.path){setInputValue('label_video_dir',j.path); await saveValues(); await loadLabelVideos()}else{toast('未选择文件夹')}}catch(e){toast(e.message)}}
+async function pickLabelImagesDir(){try{const j=await api('/api/pick-label-images-dir',{values:collect()}); if(j.path){setInputValue('label_images_input_dir',j.path); await saveValues(); toast('已选择图片集文件夹')}else{toast('未选择文件夹')}}catch(e){toast(e.message)}}
+function selectNextVideo(){if(!labelVideos.length){toast('请先读取文件夹视频'); return} if(labelVideoIndex>=0&&labelVideos[labelVideoIndex]) labelVideos[labelVideoIndex].done=true; const next=Math.min(labelVideos.length-1,labelVideoIndex+1); selectLabelVideo(next); toast(next===labelVideos.length-1?'已到最后一个视频':'已切换到下一个视频')}
+
+function selectPrevVideo(){if(!labelVideos.length){toast('请先读取文件夹视频'); return} selectLabelVideo(Math.max(0,labelVideoIndex-1))}
+let labelSessionId=sessionStorage.getItem('maixcamLabelSessionId')||'';
+let labelSessionState=null;
+let labelPlaying=false;
+let labelAdvanceBusy=false;
+let labelPlayTimer=null;
+let labelActiveObjectId=null;
+let labelDrawMode='add';
+let labelDragStart=null;
+function labelFrameUrl(){return `/api/label-session/frame?session_id=${encodeURIComponent(labelSessionId)}&t=${Date.now()}`}
+function labelPalette(i){return ['#50dc78','#50b4ff','#e678ff','#ffbe46','#78dcff','#b4a0ff','#78ffd2','#ff8c8c'][i%8]}
+function showLabelStudio(show){const studio=document.getElementById('label-browser-studio'); if(studio) studio.hidden=!show}
+function renderLabelSession(){const state=labelSessionState; const status=document.getElementById('label-session-status'); const list=document.getElementById('label-object-list'); const tip=document.getElementById('label-session-tip'); if(!state||!status||!list) return; status.innerHTML=`<span>来源：${state.source_type==='camera'?'摄像头':state.source_type==='images'?'图片集':'视频'}</span><span>帧：${state.frame_index}${state.frame_count?'/'+Math.max(0,state.frame_count-1):''}</span><span>已保存：${state.saved}</span><span>间隔：${state.interval}</span><span>目标：${state.objects.filter(x=>x.ok).length}/${state.objects.length}</span>${state.ended?'<span>来源已结束</span>':''}${state.lost?'<span>跟踪丢失，请修正或删除</span>':''}`; if(tip) tip.textContent=state.lost?'跟踪丢失，已暂停播放；请选择目标后修正或删除。':'在画面上拖动鼠标绘制标注框。'; list.innerHTML=''; if(!state.objects.length){list.innerHTML='<div class="empty">尚未框选目标。点击“添加框”后在画面拖动鼠标。</div>'} else {state.objects.forEach((obj,index)=>{const item=document.createElement('button'); item.className='label-object'+(obj.id===labelActiveObjectId?' active':'')+(!obj.ok?' lost':''); item.innerHTML=`<b>#${obj.id} ${obj.label}${obj.ok?'':' · 已丢失'}</b><span>${obj.w} × ${obj.h} · 参考视角 ${obj.sample_count||1}</span>`; item.onclick=()=>{labelActiveObjectId=obj.id; renderLabelSession(); drawLabelCanvas()}; list.appendChild(item)})} const button=document.getElementById('label-play-button'); if(button) button.textContent=labelPlaying?'暂停跟踪':'播放跟踪'; drawLabelCanvas()}
+
+function refreshLabelFrame(){const image=document.getElementById('label-frame-image'); const stage=document.getElementById('label-stage'); if(!image||!labelSessionId) return; image.hidden=false; stage?.classList.remove('empty-stage'); image.onload=()=>drawLabelCanvas(); image.src=labelFrameUrl()}
+function setupLabelCanvas(){const canvas=document.getElementById('label-frame-canvas'); if(!canvas||canvas.dataset.ready) return; canvas.dataset.ready='1'; canvas.hidden=false; canvas.addEventListener('pointerdown',event=>{if(!labelSessionState) return; const point=labelCanvasPoint(event); if(!point) return; labelDragStart=point; canvas.setPointerCapture(event.pointerId); drawLabelCanvas(point)}); canvas.addEventListener('pointermove',event=>{if(!labelDragStart) return; drawLabelCanvas(labelCanvasPoint(event))}); canvas.addEventListener('pointerup',async event=>{if(!labelDragStart) return; const end=labelCanvasPoint(event); const start=labelDragStart; labelDragStart=null; canvas.releasePointerCapture(event.pointerId); drawLabelCanvas(); if(!end) return; const x=Math.min(start.x,end.x),y=Math.min(start.y,end.y),w=Math.abs(end.x-start.x),h=Math.abs(end.y-start.y); if(w<5||h<5){toast('标注框过小');return} const action=labelDrawMode==='edit'?'update':labelDrawMode==='sample'?'add_sample':'add'; if(action==='add_sample'&&!labelActiveObjectId){toast('请先在右侧选择要追加视角的目标');return} let label=''; if(action==='add'){label=await chooseBrowserLabel(); if(!label) return} try{const j=await api('/api/label-session/object',{session_id:labelSessionId,action,object_id:labelActiveObjectId,bbox:{x,y,w,h},label}); labelSessionState=j.state; if(action==='add') labelActiveObjectId=labelSessionState.objects.at(-1)?.id||null; renderLabelSession()}catch(e){toast(e.message)}}); window.addEventListener('resize',()=>drawLabelCanvas())}
+
+function labelCanvasPoint(event){const image=document.getElementById('label-frame-image'); if(!image||!labelSessionState) return null; const rect=image.getBoundingClientRect(); if(!rect.width||!rect.height) return null; return {x:(event.clientX-rect.left)*labelSessionState.width/rect.width,y:(event.clientY-rect.top)*labelSessionState.height/rect.height}}
+function drawLabelCanvas(dragEnd=null){const canvas=document.getElementById('label-frame-canvas'); const image=document.getElementById('label-frame-image'); if(!canvas||!image||!labelSessionState||image.hidden) return; const rect=image.getBoundingClientRect(); const dpr=window.devicePixelRatio||1; canvas.style.width=rect.width+'px'; canvas.style.height=rect.height+'px'; canvas.style.left=(rect.left-canvas.parentElement.getBoundingClientRect().left)+'px'; canvas.style.top=(rect.top-canvas.parentElement.getBoundingClientRect().top)+'px'; canvas.width=Math.max(1,Math.round(rect.width*dpr)); canvas.height=Math.max(1,Math.round(rect.height*dpr)); const ctx=canvas.getContext('2d'); ctx.setTransform(dpr,0,0,dpr,0,0); ctx.clearRect(0,0,rect.width,rect.height); const sx=rect.width/labelSessionState.width,sy=rect.height/labelSessionState.height; labelSessionState.objects.forEach((obj,index)=>{const active=obj.id===labelActiveObjectId; ctx.strokeStyle=obj.ok?labelPalette(index):'#ff6678'; ctx.lineWidth=active?3:2; ctx.strokeRect(obj.x*sx,obj.y*sy,obj.w*sx,obj.h*sy); ctx.font='600 13px Microsoft YaHei UI'; const text=`#${obj.id} ${obj.label}${obj.ok?'':' LOST'}`; const tx=obj.x*sx,ty=Math.max(18,obj.y*sy-5); ctx.fillStyle='rgba(3,8,19,.85)'; const tw=ctx.measureText(text).width+10; ctx.fillRect(tx,ty-16,tw,20); ctx.fillStyle='#fff'; ctx.fillText(text,tx+5,ty)}); if(labelDragStart&&dragEnd){const x=Math.min(labelDragStart.x,dragEnd.x)*sx,y=Math.min(labelDragStart.y,dragEnd.y)*sy,w=Math.abs(labelDragStart.x-dragEnd.x)*sx,h=Math.abs(labelDragStart.y-dragEnd.y)*sy; ctx.strokeStyle='#fff';ctx.setLineDash([6,4]);ctx.lineWidth=2;ctx.strokeRect(x,y,w,h);ctx.setLineDash([])}}
+async function chooseBrowserLabel(){const labels=(labelSessionState?.labels||[]); const choices=labels.length?labels:(collect().label_name||'object').split(/[,;\n]+/).map(x=>x.trim()).filter(Boolean); if(choices.length===1) return choices[0]; const answer=prompt(`输入类别名称：\n${choices.map((x,i)=>`${i+1}. ${x}`).join('\n')}`,choices[0]); if(answer===null) return ''; const index=Number(answer); const label=Number.isInteger(index)&&index>=1&&index<=choices.length?choices[index-1]:answer.trim(); if(!choices.includes(label)){toast('请输入标签列表中的类别');return ''} return label}
+function setLabelDrawMode(mode){if(!labelSessionId){toast('请先开始网页标注');return} if((mode==='edit'||mode==='sample')&&!labelActiveObjectId){toast('请先在右侧选择目标');return} if(mode==='sample'&&labelSessionState?.tracker!=='multi_template'){toast('追加视角需要先选择 Multi-template（多角度）跟踪器');return} labelDrawMode=mode; toast(mode==='edit'?'请拖动绘制选中目标的新框':mode==='sample'?'请拖动绘制该目标在新角度下的框':'请拖动绘制新目标框')}
+
+async function startBrowserLabelSession(){const v=collect(); if(v.label_source_type==='images'&&!v.label_images_input_dir.trim()){toast('请填写图片集文件夹路径');return} if(v.label_source_type==='camera'&&!/^\d+$/.test(v.label_camera_index.trim())){toast('请输入非负整数摄像头索引，例如 0');return} if(v.label_source_type==='video'&&!v.label_video.trim()){toast('请先从队列选择视频或填写视频路径');return} if(labelSessionId) await endBrowserLabelSession(); try{const j=await api('/api/label-session/start',{values:v}); labelSessionId=j.state.session_id; sessionStorage.setItem('maixcamLabelSessionId',labelSessionId); labelSessionState={...j.state,labels:(v.label_name||'object').split(/[,;\n]+/).map(x=>x.trim()).filter(Boolean)}; labelActiveObjectId=null; labelPlaying=false; showLabelStudio(true); setupLabelCanvas(); renderLabelSession(); refreshLabelFrame(); toast('网页标注已就绪，请添加目标框')}catch(e){toast(e.message)}}
+async function advanceBrowserLabelFrame(){if(!labelSessionId||labelAdvanceBusy) return; labelAdvanceBusy=true; try{const j=await api('/api/label-session/advance',{session_id:labelSessionId}); labelSessionState={...j.state,labels:labelSessionState?.labels||[]}; if(labelSessionState.lost||labelSessionState.ended) stopBrowserLabelPlay(); renderLabelSession(); refreshLabelFrame()}catch(e){stopBrowserLabelPlay();toast(e.message)}finally{labelAdvanceBusy=false}}
+function toggleBrowserLabelPlay(){if(labelPlaying) stopBrowserLabelPlay();else startBrowserLabelPlay()}
+function startBrowserLabelPlay(){if(!labelSessionId){toast('请先开始网页标注');return} if(!labelSessionState?.objects.length){toast('请先添加至少一个目标框');return} if(labelSessionState.lost){toast('请先修正或删除丢失目标');return} labelPlaying=true; renderLabelSession(); const tick=async()=>{if(!labelPlaying) return; await advanceBrowserLabelFrame(); if(labelPlaying) labelPlayTimer=setTimeout(tick,45)}; tick()}
+function stopBrowserLabelPlay(){labelPlaying=false;clearTimeout(labelPlayTimer);labelPlayTimer=null;renderLabelSession()}
+async function saveBrowserLabelFrame(){if(!labelSessionId) return; try{const j=await api('/api/label-session/save',{session_id:labelSessionId}); labelSessionState={...j.state,labels:labelSessionState?.labels||[]}; renderLabelSession(); if(j.saved){toast('当前帧已保存');loadLabelResults()}else toast('没有可保存的有效目标框')}catch(e){toast(e.message)}}
+async function deleteBrowserLabelObject(){if(!labelSessionId||!labelActiveObjectId){toast('请先选择目标');return} try{const j=await api('/api/label-session/object',{session_id:labelSessionId,action:'delete',object_id:labelActiveObjectId,bbox:{x:0,y:0,w:3,h:3}}); labelSessionState={...j.state,labels:labelSessionState?.labels||[]}; labelActiveObjectId=labelSessionState.objects[0]?.id||null; renderLabelSession()}catch(e){toast(e.message)}}
+async function endBrowserLabelSession(){stopBrowserLabelPlay(); if(!labelSessionId){showLabelStudio(false);return} try{await api('/api/label-session/end',{session_id:labelSessionId})}catch(e){} labelSessionId='';labelSessionState=null;labelActiveObjectId=null;sessionStorage.removeItem('maixcamLabelSessionId');showLabelStudio(false);loadLabelResults()}
+async function runLabelCurrent(){await startBrowserLabelSession()}
+async function copyCommand(action){try{const cmd=await command(action); await navigator.clipboard.writeText(cmd); toast('命令已复制')}catch(e){toast(e.message)}}
+async function runAction(action){const startButton=document.getElementById('start-train-button'); try{if(action==='train'){if(startButton){startButton.setAttribute('disabled','');startButton.textContent='正在检查...'} const ready=await checkTrainReady(false); if(!ready) return; if(startButton) startButton.textContent='正在启动...'} await api('/api/run',{action,values:collect()}); showTab(action==='train'?'train':'logs'); toast(action==='train'?'训练已启动，请查看下方进度':'任务已启动'); refreshState()}catch(e){toast(e.message)}finally{if(action==='train'&&startButton){startButton.removeAttribute('disabled');startButton.textContent='检查并开始训练'}}}
+async function stopJob(){try{const j=await api('/api/stop',{}); toast(j.stopped?'已请求停止':'当前没有正在运行的任务'); refreshState()}catch(e){toast(e.message)}}
+async function stopTrainExport(){try{const j=await api('/api/stop-train-export',{}); toast(j.stopped?'已请求停止训练并导出当前 best':'当前没有正在训练的任务'); showTab('logs'); refreshState()}catch(e){toast(e.message)}}
+async function loadLabelResults(){try{await saveValues(); const r=await fetch('/api/label-results'); const j=await r.json(); const box=document.getElementById('label-results'); box.innerHTML=''; const items=j.items||[]; if(!items.length){box.innerHTML='<div class="empty">当前图片目录和标注目录中还没有可显示的标注结果。</div>'; return} for(const it of items){const card=document.createElement('div'); card.className='sample'; const src='/api/label-preview?image='+encodeURIComponent(it.image)+'&xml='+encodeURIComponent(it.xml)+'&t='+Date.now(); card.innerHTML=`<img src="${src}" loading="lazy"><div class="meta"><b>${it.stem}</b><span>${(it.boxes||[]).length} 个框</span><button class="delete">删除标注</button></div>`; card.querySelector('.delete').onclick=async()=>{const imageMode=collect().label_source_type==='images'; const target=imageMode?'对应 XML 标注':'这张图片和对应 XML'; if(Date.now()>deleteConfirmUntil){if(!confirm(`确定删除${target}吗？\n确认后 5 分钟内删除标注不再重复询问。`)) return; deleteConfirmUntil=Date.now()+5*60*1000} await api('/api/delete-label-sample',{image:it.image,xml:it.xml}); card.remove(); toast(imageMode?'已删除 XML 标注':'已删除废图和 XML')}; box.appendChild(card)}}catch(e){toast(e.message)}}
+async function loadTrainPlots(){try{const r=await fetch('/api/train-plots'); const j=await r.json(); const box=document.getElementById('train-plots'); if(!box) return; const note=document.getElementById('train-plots-note'); const items=j.items||[]; if(note) note.textContent=items.length?`已发现 ${items.length} 张图片`:'训练开始后自动刷新'; if(!items.length){box.innerHTML='<div class="empty">训练进行中或尚未生成可视化图。</div>'; return} box.innerHTML=''; for(const item of items){const card=document.createElement('div'); card.className='sample'; card.innerHTML=`<img src="/api/train-plot?name=${encodeURIComponent(item.name)}&t=${Date.now()}" loading="lazy"><div class="meta"><b>${item.name}</b></div>`; box.appendChild(card)}}catch(e){}}
+function scheduleLabelResultsRefresh(){clearTimeout(labelResultsTimer); labelResultsTimer=setTimeout(()=>loadLabelResults(),350)}
+async function refreshState(){try{const r=await fetch('/api/state'); if(!r.ok) throw new Error(`HTTP ${r.status}`); const s=await r.json(); setConnectionState(true); apply(s.values||{}); updateTrainProgress(s.train_progress||{}); const log=document.getElementById('log'); log.textContent=(s.logs||[]).join(''); log.scrollTop=log.scrollHeight; const pill=document.getElementById('runPill'); pill.className='pill '+(s.running?'run':'idle'); pill.querySelector('span:last-child').textContent=s.running?'运行中':'空闲'; const jobNames={train:'模型训练',convert:'模型转换',test:'模型测试',label:'自动标注',train_ssh:'训练 SSH 检查',vm_ssh:'转换 SSH 检查'}; document.getElementById('jobInfo').textContent=s.job?`${jobNames[s.job]||s.job} · 开始 ${s.started_at||'-'}${s.finished_at?' · 结束 '+s.finished_at:''}${s.exit_code!==null&&s.exit_code!==undefined?' · 退出码 '+s.exit_code:''}`:'暂无任务'; const errorBox=document.getElementById('lastError'); const failed=!s.running&&s.job&&s.exit_code!==null&&Number(s.exit_code)!==0; if(s.last_error||failed){errorBox.hidden=false; errorBox.textContent=s.last_error||`上次任务失败（退出码 ${s.exit_code}），请打开“运行日志”查看具体原因。`}else errorBox.hidden=true; const box=document.getElementById('markers'); box.innerHTML=''; for(const [k,v] of Object.entries(s.markers||{})){const div=document.createElement('div'); div.className='marker'; div.innerHTML=`<b>${k}</b><span>${v}</span>`; box.appendChild(div)}}catch(e){setConnectionState(false); const pill=document.getElementById('runPill'); if(pill){pill.className='pill idle';pill.querySelector('span:last-child').textContent='未连接'} const errorBox=document.getElementById('lastError'); if(errorBox){errorBox.hidden=false;errorBox.textContent='训练面板未运行。请双击 start_train_panel.cmd，然后刷新此页面。'}}}
+function copyLogs(){navigator.clipboard.writeText(document.getElementById('log').textContent);toast('日志已复制')}
+function showTab(name){const target=document.getElementById('tab-'+name); if(!target) name='train'; document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));document.getElementById('tab-'+name).classList.add('active');document.querySelectorAll('.nav button').forEach(x=>x.classList.toggle('active',x.dataset.tab===name)); localStorage.setItem('myAutoTrainTab',name); if(name==='label') loadLabelResults()}
+
+document.querySelectorAll('.nav button').forEach(b=>b.onclick=()=>showTab(b.dataset.tab));
+document.querySelectorAll('input,select').forEach(el=>{const handler=()=>{if(el.id==='label_prefix') rawLabelPrefix.manual=true; if((el.id==='train_images_dir'||el.id==='train_annotations_dir')&&String(values.prepared_dataset_yaml||'').trim()){setInputValue('prepared_dataset_yaml',''); updatePreparedDatasetUI()} if(el.name==='train_task') updateTrainTaskUI(); if(el.name==='label_source_type') updateLabelSourceUI(); collect(); updateCurrentVideo(); saveValues(); updateCommands(); if(['train_images_dir','base_model','img_width','img_height','image_resize_mode','batch','train_cache'].includes(el.id)||el.name==='train_device'||el.name==='train_task') scheduleResourceEstimate(); if(['label_images_dir','label_annotations_dir','label_annotations_dir_images','label_images_input_dir'].includes(el.id)) scheduleLabelResultsRefresh()}; el.addEventListener('input',handler); el.addEventListener('change',handler)});
+if(localStorage.getItem('myAutoTrainAdvanced')==='1'){document.body.classList.add('show-advanced');setText('advanced-toggle','收起更多设置')}
+showTab(localStorage.getItem('myAutoTrainTab')||'train');
+updateSplitRatio();
+refreshState(); setInterval(refreshState,1400);
+
+
+
+</script>
+</body>
+</html>'''
+
+
+class PanelHandler(BaseHTTPRequestHandler):
+    server_version = "MaixCamWebPanel/1.0"
+
+    def log_message(self, format: str, *args: Any) -> None:
+        return
+
+
+    def send_json(self, data: dict[str, Any], status: int = 200) -> None:
+        raw = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def read_json(self) -> dict[str, Any]:
+        length = int(self.headers.get("Content-Length", "0") or "0")
+        if length <= 0:
+            return {}
+        return json.loads(self.rfile.read(length).decode("utf-8"))
+
+    def do_GET(self) -> None:
+        parsed = urlparse(self.path)
+        if parsed.path == "/":
+            raw = HTML_PAGE.encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+            return
+        if parsed.path == "/api/state":
+            with STATE_LOCK:
+                self.send_json({
+                    "values": STATE["values"],
+                    "logs": STATE["logs"],
+                    "markers": STATE["markers"],
+                    "train_progress": STATE["train_progress"],
+                    "running": STATE["running"],
+                    "job": STATE["job"],
+                    "exit_code": STATE["exit_code"],
+                    "started_at": STATE["started_at"],
+                    "finished_at": STATE["finished_at"],
+                    "last_error": STATE["last_error"],
+                })
+            return
+        if parsed.path == "/api/train-plots":
+            _, items = list_train_plots()
+            self.send_json({"items": items})
+            return
+        if parsed.path == "/api/train-plot":
+            try:
+                params = parse_qs(parsed.query)
+                name = params.get("name", [""])[0]
+                plot_dir, _ = list_train_plots()
+                if not plot_dir.is_dir():
+                    raise ValueError("当前没有可用的训练图片目录。")
+                send_train_plot(self, plot_dir, name)
+            except Exception as exc:
+                message = str(exc).encode("utf-8", errors="replace")
+                self.send_response(HTTPStatus.BAD_REQUEST)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Content-Length", str(len(message)))
+                self.end_headers()
+                self.wfile.write(message)
+            return
+        if parsed.path == "/api/label-results":
+            with STATE_LOCK:
+                values = STATE["values"].copy()
+            self.send_json({"items": list_label_results(values)})
+            return
+        if parsed.path == "/api/label-videos":
+            with STATE_LOCK:
+                values = STATE["values"].copy()
+            self.send_json({"items": list_label_videos(values)})
+            return
+        if parsed.path == "/api/video-preview":
+            try:
+                params = parse_qs(parsed.query)
+                video = params.get("path", [""])[0]
+                with STATE_LOCK:
+                    values = STATE["values"].copy()
+                video_dir = Path(values.get("label_video_dir", "")).expanduser().resolve()
+                if not video_dir.is_dir():
+                    raise ValueError("请先选择有效的视频文件夹。")
+                video_path = resolve_under(video, video_dir)
+                raw = render_video_preview(video_path)
+            except Exception as exc:
+                message = str(exc).encode("utf-8", errors="replace")
+                self.send_response(HTTPStatus.BAD_REQUEST)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(message)))
+                self.end_headers()
+                self.wfile.write(message)
+                return
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+            return
+        if parsed.path == "/api/video-file":
+            try:
+                params = parse_qs(parsed.query)
+                video = params.get("path", [""])[0]
+                with STATE_LOCK:
+                    values = STATE["values"].copy()
+                video_dir = Path(values.get("label_video_dir", "")).expanduser().resolve()
+                if not video_dir.is_dir():
+                    raise ValueError("请先选择有效的视频文件夹。")
+                video_path = resolve_under(video, video_dir)
+                send_video_file(self, video_path)
+            except Exception as exc:
+                message = str(exc).encode("utf-8", errors="replace")
+                self.send_response(HTTPStatus.BAD_REQUEST)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(message)))
+                self.end_headers()
+                self.wfile.write(message)
+            return
+        if parsed.path == "/api/label-session/frame":
+            try:
+                params = parse_qs(parsed.query)
+                session = get_label_session(params.get("session_id", [""])[0])
+                with session["lock"]:
+                    ok, encoded = cv2.imencode(".jpg", session["frame"], [int(cv2.IMWRITE_JPEG_QUALITY), 88])
+                    if not ok:
+                        raise ValueError("当前标注帧编码失败。")
+                    raw = encoded.tobytes()
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "image/jpeg")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+            except Exception as exc:
+                message = str(exc).encode("utf-8", errors="replace")
+                self.send_response(HTTPStatus.BAD_REQUEST)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Content-Length", str(len(message)))
+                self.end_headers()
+                self.wfile.write(message)
+            return
+        if parsed.path == "/api/label-preview":
+
+
+            params = parse_qs(parsed.query)
+            image = params.get("image", [""])[0]
+            xml = params.get("xml", [""])[0]
+            with STATE_LOCK:
+                values = STATE["values"].copy()
+            image_path = resolve_under(image, label_result_images_dir(values))
+            xml_path = resolve_under(xml, Path(values["label_annotations_dir"]))
+            raw = render_label_preview(image_path, xml_path)
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+            return
+        self.send_error(404)
+
+
+
+    def do_POST(self) -> None:
+        try:
+            body = self.read_json()
+            if self.path == "/api/command":
+                action = str(body.get("action", ""))
+                values = clean_values(body.get("values"))
+                cmd = command_for(action, values)
+                self.send_json({"command": quote_cmd(cmd)})
+                return
+            if self.path == "/api/train-estimate":
+                values = clean_values(body.get("values"))
+                self.send_json({"estimate": estimate_train_resources(values)})
+                return
+            if self.path == "/api/train-check":
+                values = clean_values(body.get("values"))
+                self.send_json(train_preflight(values))
+                return
+            if self.path == "/api/values":
+
+                values = clean_values(body.get("values"))
+                with STATE_LOCK:
+                    STATE["values"] = values.copy()
+                self.send_json({"ok": True})
+                return
+            if self.path == "/api/defaults":
+                values = save_user_defaults(body.get("values") or {})
+                with STATE_LOCK:
+                    STATE["values"] = values.copy()
+                self.send_json({"ok": True, "values": values, "path": str(USER_DEFAULTS_FILE)})
+                return
+            if self.path == "/api/pick-test-image":
+                values = clean_values(body.get("values"))
+                self.send_json({"path": pick_image_file(values.get("test_image_file", ""))})
+                return
+            if self.path == "/api/pick-train-directory":
+                values = clean_values(body.get("values"))
+                field = str(body.get("field", ""))
+                titles = {
+                    "dataset_root": "选择训练输出目录",
+                    "train_images_dir": "选择训练图片目录",
+                    "train_annotations_dir": "选择 XML 标注目录",
+                }
+                if field not in titles:
+                    raise ValueError("不支持的训练目录字段。")
+                self.send_json({"path": pick_directory(values.get(field, ""), titles[field])})
+                return
+            if self.path == "/api/pick-raw-dataset-root":
+                values = clean_values(body.get("values"))
+                selected = pick_directory(values.get("raw_dataset_root", ""), "选择原始 YOLO TXT 数据集")
+                self.send_json({"path": selected})
+                return
+            if self.path == "/api/dataset-convert/inspect":
+                values = clean_values(body.get("values"))
+                self.send_json({"info": inspect_yolo_txt_dataset(values)})
+                return
+            if self.path == "/api/dataset-import/run":
+                values = clean_values(body.get("values"))
+                result = inspect_prepared_yolo_dataset(values.get("raw_dataset_root", ""))
+                train_split = result["splits"]["train"]
+                values.update({
+                    "raw_dataset_root": result["root"],
+                    "raw_images_dir": train_split["images_dir"],
+                    "raw_labels_dir": train_split["labels_dir"],
+                    "raw_output_dir": result["root"],
+                    "raw_class_names": ", ".join(result["class_names"]),
+                    "dataset_root": result["root"],
+                    "train_task": "detect",
+                    "train_images_dir": train_split["images_dir"],
+                    "train_annotations_dir": "",
+                    "prepared_dataset_yaml": result["yaml_path"],
+                })
+                with STATE_LOCK:
+                    STATE["values"] = values.copy()
+                self.send_json({"ok": True, "result": result, "values": values})
+                return
+            if self.path == "/api/dataset-convert/run":
+                values = clean_values(body.get("values"))
+                with STATE_LOCK:
+                    panel_busy = bool(STATE["running"])
+                if panel_busy:
+                    raise ValueError("当前训练或其他任务正在运行。请等任务结束后再转换，避免抢占磁盘和处理器资源。")
+                result = convert_yolo_txt_to_voc(values)
+                values.update({
+                    "raw_dataset_root": result["root"],
+                    "raw_images_dir": result["images_dir"],
+                    "raw_labels_dir": result["labels_dir"],
+                    "raw_output_dir": result["output_dir"],
+                    "raw_class_names": ", ".join(result["class_names"]),
+                    "dataset_root": result["output_dir"],
+                    "train_task": "detect",
+                    "train_images_dir": result["output_images_dir"],
+                    "train_annotations_dir": result["output_annotations_dir"],
+                    "prepared_dataset_yaml": "",
+                })
+                with STATE_LOCK:
+                    STATE["values"] = values.copy()
+                self.send_json({"ok": True, "result": result, "values": values})
+                return
+            if self.path == "/api/pick-base-model":
+                values = clean_values(body.get("values"))
+                self.send_json({"path": pick_model_file(values.get("base_model", ""))})
+                return
+            if self.path == "/api/pick-test-image-folder":
+                values = clean_values(body.get("values"))
+                self.send_json({"path": pick_directory(values.get("test_image_folder", ""))})
+                return
+            if self.path == "/api/pick-test-output-dir":
+                values = clean_values(body.get("values"))
+                self.send_json({"path": pick_directory(values.get("test_output_dir", ""))})
+                return
+            if self.path == "/api/pick-label-video-dir":
+                values = clean_values(body.get("values"))
+                selected = pick_directory(values.get("label_video_dir", ""))
+                if selected:
+                    values["label_video_dir"] = selected
+                    with STATE_LOCK:
+                        STATE["values"] = values.copy()
+                self.send_json({"path": selected})
+                return
+            if self.path == "/api/pick-label-images-dir":
+                values = clean_values(body.get("values"))
+                selected = pick_directory(values.get("label_images_input_dir", ""))
+                if selected:
+                    values["label_images_input_dir"] = selected
+                    with STATE_LOCK:
+                        STATE["values"] = values.copy()
+                self.send_json({"path": selected})
+                return
+            if self.path == "/api/label-session/start":
+                values = clean_values(body.get("values"))
+                state = start_label_session(values)
+                self.send_json({"ok": True, "state": state})
+                return
+            if self.path == "/api/label-session/advance":
+                session = get_label_session(str(body.get("session_id", "")))
+                with session["lock"]:
+                    state = advance_label_session(session)
+                self.send_json({"ok": True, "state": state})
+                return
+            if self.path == "/api/label-session/object":
+                session = get_label_session(str(body.get("session_id", "")))
+                action = str(body.get("action", "add"))
+                bbox_raw = body.get("bbox") or {}
+                with session["lock"]:
+                    frame = session["frame"]
+                    bbox = sanitize_label_bbox(
+                        (bbox_raw.get("x", 0), bbox_raw.get("y", 0), bbox_raw.get("w", 0), bbox_raw.get("h", 0)),
+                        frame.shape[1], frame.shape[0],
+                    )
+                    if action == "delete":
+                        object_id = int(body.get("object_id", 0))
+                        session["objects"] = [obj for obj in session["objects"] if obj.obj_id != object_id]
+                    else:
+                        if bbox[2] < 3 or bbox[3] < 3:
+                            raise ValueError("标注框过小，请重新绘制。")
+                        if action in {"update", "add_sample"}:
+                            object_id = int(body.get("object_id", 0))
+                            obj = next((item for item in session["objects"] if item.obj_id == object_id), None)
+                            if obj is None:
+                                raise ValueError("要修正的目标不存在。")
+                            if action == "add_sample":
+                                add_sample = getattr(obj.tracker, "add_sample", None)
+                                if not callable(add_sample):
+                                    raise ValueError("追加视角仅支持 Multi-template tracker，请重新开始会话后选择该模式。")
+                                if not add_sample(frame, bbox):
+                                    raise ValueError("参考视角采集失败，请重新绘制更大的框。")
+                                obj.bbox = bbox
+                                obj.ok = True
+                                obj.sample_count += 1
+                            else:
+                                obj.bbox = bbox
+                                obj.tracker = make_label_tracker(session["tracker"])
+                                obj.ok = init_label_tracker(obj.tracker, frame, bbox)
+                                obj.sample_count = 1
+                        else:
+                            label = str(body.get("label", "")).strip()
+                            if label not in session["labels"]:
+                                raise ValueError("请选择当前标签列表中的类别。")
+                            tracker = make_label_tracker(session["tracker"])
+                            if not init_label_tracker(tracker, frame, bbox):
+                                raise ValueError("跟踪器初始化失败，请换一个更大的标注框。")
+                            session["objects"].append(LabelTrackObject(session["next_object_id"], label, bbox, tracker))
+                            session["next_object_id"] += 1
+                    state = label_session_state(session)
+                self.send_json({"ok": True, "state": state})
+                return
+            if self.path == "/api/label-session/save":
+                session = get_label_session(str(body.get("session_id", "")))
+                with session["lock"]:
+                    saved = save_label_session_sample(session)
+                    state = label_session_state(session)
+                self.send_json({"ok": True, "saved": saved, "state": state})
+                return
+            if self.path == "/api/label-session/end":
+                end_label_session(str(body.get("session_id", "")))
+                self.send_json({"ok": True})
+                return
+
+
+
+            if self.path == "/api/run":
+                action = str(body.get("action", ""))
+                values = clean_values(body.get("values"))
+                start_job(action, values)
+                self.send_json({"ok": True})
+                return
+            if self.path == "/api/stop":
+                self.send_json({"stopped": stop_job()})
+                return
+            if self.path == "/api/stop-train-export":
+                self.send_json({"stopped": stop_train_and_export()})
+                return
+
+            if self.path == "/api/delete-label-sample":
+                image = str(body.get("image", ""))
+                xml = str(body.get("xml", ""))
+                with STATE_LOCK:
+                    values = STATE["values"].copy()
+                image_path = resolve_under(image, label_result_images_dir(values))
+                xml_path = resolve_under(xml, Path(values["label_annotations_dir"]))
+                paths = (xml_path,) if values.get("label_source_type") == "images" else (image_path, xml_path)
+                deleted = []
+                for path in paths:
+                    if path.exists() and path.is_file():
+                        path.unlink()
+                        deleted.append(str(path))
+                self.send_json({"ok": True, "deleted": deleted})
+                return
+            self.send_error(404)
+
+        except Exception as exc:
+            self.send_json({"error": str(exc)}, status=400)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="MaixCAM Pro YOLO HTML Web Panel")
+    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--port", type=int, default=8989)
+
+
+    parser.add_argument("--no-browser", action="store_true")
+    args = parser.parse_args()
+
+    with STATE_LOCK:
+        STATE["values"] = load_user_defaults()
+        try:
+            previous_log = LATEST_JOB_LOG_FILE.read_text(encoding="utf-8", errors="replace")
+            STATE["logs"] = previous_log.splitlines(keepends=True)[-MAX_LOG_LINES:]
+        except OSError:
+            STATE["logs"] = []
+
+    url = f"http://127.0.0.1:{args.port}"
+    try:
+        server = ThreadingHTTPServer((args.host, args.port), PanelHandler)
+    except OSError as exc:
+        print(f"无法监听 {args.host}:{args.port}：{exc}", file=sys.stderr)
+        print("请确认 8989 端口未被占用，并允许 Python 通过防火墙。", file=sys.stderr)
+
+
+        raise SystemExit(1) from exc
+    print(f"MaixCAM Pro YOLO Web Panel: {url}")
+    print(f"Listening on {args.host}:{args.port}")
+
+    if not args.no_browser:
+        threading.Timer(0.8, lambda: webbrowser.open(url)).start()
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nShutting down...")
+    finally:
+        stop_job()
+        server.server_close()
+
+
+if __name__ == "__main__":
+    main()
