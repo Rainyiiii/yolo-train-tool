@@ -18,6 +18,7 @@
   "torch_cuda": "cu128",
   "train_device": "cuda",
   "train_cache": "disk",
+  "asset_scan_root": "",
   "project_name": "my_yolo_project",
   "model_name": "my_yolo_model",
   "operator_mode": "recommended",

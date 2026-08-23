@@ -7,6 +7,7 @@ __pycache__/
 
 # Local configuration and runtime state
 train_panel_defaults.json
+model_registry.json
 .train_panel.pid.json
 config/
 cache/

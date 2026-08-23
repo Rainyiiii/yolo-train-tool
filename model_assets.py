@@ -1,0 +1,308 @@
+# -*- coding: utf-8 -*-
+"""Persistent training/deployment asset registry and catalog scanner."""
+
+from __future__ import annotations
+
+import datetime as dt
+import json
+from pathlib import Path
+from typing import Any, Iterable
+
+
+REGISTRY_SCHEMA_VERSION = 1
+TRAINING_MANIFEST_NAME = "training_manifest.json"
+
+
+def _resolved_text(path: str | Path) -> str:
+    return str(Path(path).expanduser().resolve())
+
+
+def _load_json(path: Path) -> dict[str, Any]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError, TypeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def load_registry(registry_path: Path) -> dict[str, Any]:
+    data = _load_json(registry_path)
+    return {
+        "schema_version": REGISTRY_SCHEMA_VERSION,
+        "roots": [str(item) for item in data.get("roots", []) if str(item).strip()],
+        "manifests": [str(item) for item in data.get("manifests", []) if str(item).strip()],
+    }
+
+
+def save_registry(registry_path: Path, registry: dict[str, Any]) -> None:
+    registry_path.parent.mkdir(parents=True, exist_ok=True)
+    normalized = {
+        "schema_version": REGISTRY_SCHEMA_VERSION,
+        "roots": sorted(dict.fromkeys(registry.get("roots", [])), key=str.casefold),
+        "manifests": sorted(dict.fromkeys(registry.get("manifests", [])), key=str.casefold),
+    }
+    temporary = registry_path.with_suffix(registry_path.suffix + ".tmp")
+    temporary.write_text(json.dumps(normalized, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(registry_path)
+
+
+def register_asset_root(registry_path: Path, root: str | Path) -> str:
+    resolved = _resolved_text(root)
+    registry = load_registry(registry_path)
+    if resolved not in registry["roots"]:
+        registry["roots"].append(resolved)
+        save_registry(registry_path, registry)
+    return resolved
+
+
+def register_asset_manifest(registry_path: Path, manifest: str | Path) -> str:
+    resolved = _resolved_text(manifest)
+    registry = load_registry(registry_path)
+    if resolved not in registry["manifests"]:
+        registry["manifests"].append(resolved)
+    path = Path(resolved)
+    if path.name == TRAINING_MANIFEST_NAME:
+        root = str(path.parent.parent)
+        if root not in registry["roots"]:
+            registry["roots"].append(root)
+    save_registry(registry_path, registry)
+    return resolved
+
+
+def _classes_from_file(path: Path) -> list[str]:
+    try:
+        return [line.strip() for line in path.read_text(encoding="utf-8-sig").splitlines() if line.strip()]
+    except OSError:
+        return []
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _artifact(kind: str, raw_path: str | Path | None, base_dir: Path | None = None) -> dict[str, Any] | None:
+    if not raw_path:
+        return None
+    path = Path(raw_path).expanduser()
+    if not path.is_absolute() and base_dir is not None:
+        path = base_dir / path
+    path = path.resolve()
+    exists = path.exists()
+    size = path.stat().st_size if exists and path.is_file() else 0
+    return {
+        "kind": kind,
+        "path": str(path),
+        "name": path.name,
+        "exists": exists,
+        "size_mb": round(size / (1024 * 1024), 2),
+    }
+
+
+def _timestamp_from_output(path: Path) -> str:
+    value = path.name.removeprefix("outputs_")
+    try:
+        parsed = dt.datetime.strptime(value, "%Y%m%d_%H%M%S")
+        return parsed.isoformat(timespec="seconds")
+    except ValueError:
+        try:
+            return dt.datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds")
+        except OSError:
+            return ""
+
+
+def _run_from_manifest(manifest_path: Path, data: dict[str, Any]) -> dict[str, Any] | None:
+    if data.get("kind") != "training_run":
+        return None
+    dataset = data.get("dataset") if isinstance(data.get("dataset"), dict) else {}
+    training = data.get("training") if isinstance(data.get("training"), dict) else {}
+    artifacts_raw = data.get("artifacts") if isinstance(data.get("artifacts"), dict) else {}
+    classes_raw = dataset.get("classes") if isinstance(dataset.get("classes"), list) else []
+    artifacts = [
+        item for item in (
+            _artifact("pt", artifacts_raw.get("pt"), manifest_path.parent),
+            _artifact("onnx", artifacts_raw.get("onnx"), manifest_path.parent),
+            _artifact("classes", artifacts_raw.get("classes"), manifest_path.parent),
+            _artifact("results", artifacts_raw.get("results_csv"), manifest_path.parent),
+        ) if item is not None
+    ]
+    configured_output = Path(str(data.get("output_dir") or manifest_path.parent)).expanduser()
+    output_dir = _resolved_text(configured_output if configured_output.exists() else manifest_path.parent)
+    configured_dataset_root = Path(str(dataset.get("root") or Path(output_dir).parent)).expanduser()
+    dataset_root = _resolved_text(configured_dataset_root if configured_dataset_root.exists() else Path(output_dir).parent)
+    return {
+        "run_id": str(data.get("run_id") or manifest_path.parent.name),
+        "created_at": str(data.get("created_at") or _timestamp_from_output(manifest_path.parent)),
+        "status": str(data.get("status") or "completed"),
+        "association": "manifest",
+        "manifest": str(manifest_path.resolve()),
+        "output_dir": output_dir,
+        "model_name": str(training.get("model_name") or next((item["name"] for item in artifacts if item["kind"] == "pt"), manifest_path.parent.name)),
+        "task": str(dataset.get("task") or training.get("task") or "unknown"),
+        "classes": [str(item) for item in classes_raw],
+        "dataset": {
+            "id": str(dataset.get("id") or Path(output_dir).parent.name),
+            "name": str(dataset.get("name") or Path(output_dir).parent.name),
+            "root": dataset_root,
+            "source": str(dataset.get("source") or ""),
+            "image_count": _safe_int(dataset.get("image_count")),
+            "version": str(dataset.get("version") or ""),
+        },
+        "training": training,
+        "metrics": data.get("metrics") if isinstance(data.get("metrics"), dict) else {},
+        "artifacts": artifacts,
+        "deployments": [],
+    }
+
+
+def _infer_run(output_dir: Path) -> dict[str, Any] | None:
+    pt_files = sorted(output_dir.glob("*.pt"))
+    onnx_files = sorted(output_dir.glob("*.onnx"))
+    if not pt_files and not onnx_files:
+        return None
+    classes = _classes_from_file(output_dir / "classes.txt")
+    artifacts = [
+        item for item in (
+            _artifact("pt", pt_files[0] if pt_files else None),
+            _artifact("onnx", onnx_files[0] if onnx_files else None),
+            _artifact("classes", output_dir / "classes.txt" if (output_dir / "classes.txt").is_file() else None),
+            _artifact("results", output_dir / "results.csv" if (output_dir / "results.csv").is_file() else None),
+        ) if item is not None
+    ]
+    model_file = pt_files[0] if pt_files else onnx_files[0]
+    dataset_root = output_dir.parent.resolve()
+    return {
+        "run_id": output_dir.name,
+        "created_at": _timestamp_from_output(output_dir),
+        "status": "completed",
+        "association": "inferred",
+        "manifest": "",
+        "output_dir": str(output_dir.resolve()),
+        "model_name": model_file.stem,
+        "task": "unknown",
+        "classes": classes,
+        "dataset": {"id": dataset_root.name, "name": dataset_root.name, "root": str(dataset_root), "source": "", "image_count": 0, "version": ""},
+        "training": {},
+        "metrics": {},
+        "artifacts": artifacts,
+        "deployments": [],
+    }
+
+
+def _candidate_output_dirs(root: Path) -> list[Path]:
+    if not root.is_dir():
+        return []
+    if root.name.startswith("outputs_"):
+        return [root]
+    return sorted((path for path in root.glob("outputs_*") if path.is_dir()), reverse=True)[:500]
+
+
+def _deployment_record(manifest_path: Path, data: dict[str, Any]) -> dict[str, Any] | None:
+    if "target" not in data or "source_model" not in data:
+        return None
+    artifact = _artifact(str(data.get("format") or "model"), data.get("artifact"), manifest_path.parent)
+    source_model = Path(str(data["source_model"])).expanduser()
+    if not source_model.is_absolute():
+        source_model = manifest_path.parent / source_model
+    return {
+        "target": str(data.get("target") or ""),
+        "target_label": str(data.get("target_label") or data.get("target") or ""),
+        "format": str(data.get("format") or ""),
+        "chip": data.get("chip"),
+        "source_model": _resolved_text(source_model),
+        "artifact": artifact,
+        "manifest": str(manifest_path.resolve()),
+    }
+
+
+def collect_model_assets(
+    registry_path: Path,
+    extra_roots: Iterable[str | Path] = (),
+    deployment_roots: Iterable[str | Path] = (),
+) -> dict[str, Any]:
+    registry = load_registry(registry_path)
+    roots: list[Path] = []
+    for raw in [*registry["roots"], *extra_roots]:
+        if not str(raw).strip():
+            continue
+        path = Path(raw).expanduser().resolve()
+        if path not in roots:
+            roots.append(path)
+
+    manifest_paths: list[Path] = []
+    for raw in registry["manifests"]:
+        path = Path(raw).expanduser().resolve()
+        if path.is_file() and path not in manifest_paths:
+            manifest_paths.append(path)
+    output_dirs: list[Path] = []
+    for root in roots:
+        for output_dir in _candidate_output_dirs(root):
+            if output_dir not in output_dirs:
+                output_dirs.append(output_dir)
+            manifest = output_dir / TRAINING_MANIFEST_NAME
+            if manifest.is_file() and manifest not in manifest_paths:
+                manifest_paths.append(manifest)
+
+    training_by_dir: dict[str, dict[str, Any]] = {}
+    deployments: list[dict[str, Any]] = []
+    for manifest_path in manifest_paths:
+        data = _load_json(manifest_path)
+        run = _run_from_manifest(manifest_path, data)
+        if run is not None:
+            training_by_dir[str(Path(run["output_dir"]).resolve()).casefold()] = run
+            continue
+        deployment = _deployment_record(manifest_path, data)
+        if deployment is not None:
+            deployments.append(deployment)
+
+    for raw_root in deployment_roots:
+        root = Path(raw_root).expanduser().resolve()
+        if not root.is_dir():
+            continue
+        for path in root.glob("*.manifest.json"):
+            deployment = _deployment_record(path, _load_json(path))
+            if deployment is not None and all(item["manifest"] != deployment["manifest"] for item in deployments):
+                deployments.append(deployment)
+
+    for output_dir in output_dirs:
+        key = str(output_dir.resolve()).casefold()
+        if key not in training_by_dir:
+            inferred = _infer_run(output_dir)
+            if inferred is not None:
+                training_by_dir[key] = inferred
+
+    runs = list(training_by_dir.values())
+    for run in runs:
+        model_paths = {item["path"].casefold() for item in run["artifacts"] if item["kind"] in {"pt", "onnx"}}
+        run["deployments"] = [item for item in deployments if item["source_model"].casefold() in model_paths]
+
+    grouped: dict[str, dict[str, Any]] = {}
+    for run in sorted(runs, key=lambda item: item.get("created_at", ""), reverse=True):
+        dataset = run["dataset"]
+        key = f"{dataset['id']}|{str(dataset['root']).casefold()}"
+        group = grouped.setdefault(key, {
+            "id": dataset["id"], "name": dataset["name"], "root": dataset["root"],
+            "source": dataset.get("source", ""), "image_count": dataset.get("image_count", 0),
+            "version": dataset.get("version", ""), "tasks": [], "classes": [], "runs": [],
+        })
+        group["runs"].append(run)
+        if run["task"] not in group["tasks"]:
+            group["tasks"].append(run["task"])
+        for class_name in run["classes"]:
+            if class_name not in group["classes"]:
+                group["classes"].append(class_name)
+
+    datasets = list(grouped.values())
+    model_count = sum(sum(item["exists"] for item in run["artifacts"] if item["kind"] in {"pt", "onnx"}) for run in runs)
+    return {
+        "summary": {
+            "dataset_count": len(datasets),
+            "run_count": len(runs),
+            "model_count": model_count,
+            "deployment_count": sum(len(run["deployments"]) for run in runs),
+        },
+        "roots": [str(path) for path in roots],
+        "datasets": datasets,
+    }

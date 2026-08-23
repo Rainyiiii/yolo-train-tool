@@ -1,5 +1,13 @@
 # 更新记录
 
+## 2.2.0-beta
+
+- 增加独立“模型资产”页面，按数据集归组展示训练记录、PT/ONNX 和设备部署产物。
+- 新训练自动生成 `training_manifest.json`，记录数据集、类别、参数、指标和模型路径。
+- 支持扫描旧版 `outputs_*` 目录，并明确区分“清单关联”和“推断关联”。
+- 模型资产可一键回填到测试页面或部署页面。
+- 增加本机 `model_registry.json` 索引，记录已扫描目录和训练/部署清单。
+
 ## 2.1.0-beta
 
 - 增加通用 ONNX、树莓派 NCNN、Rockchip RKNN、地瓜 RDK、MaixCAM、TensorRT 和 OpenVINO 设备配置档。

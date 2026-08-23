@@ -25,7 +25,7 @@ New-Item -ItemType Directory -Path $temporaryRoot | Out-Null
 $allowedExtensions = @(".py", ".ps1", ".cmd", ".bat", ".sh", ".json", ".md", ".txt")
 Get-ChildItem -LiteralPath $ScriptRoot -File | Where-Object {
     $_.Extension -in $allowedExtensions -and
-    $_.Name -notin @("train_panel_defaults.json") -and
+    $_.Name -notin @("train_panel_defaults.json", "model_registry.json") -and
     $_.Name -notmatch "^\.train"
 } | ForEach-Object {
     Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $temporaryRoot $_.Name)

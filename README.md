@@ -1,6 +1,6 @@
 # MyAutoTrain
 
-MyAutoTrain 是一个面向 Windows、Ubuntu 和多种边缘部署平台的 YOLO 训练工具，把数据检查、半自动标注、模型训练、多平台导出和测试放在同一个网页中。训练端负责生成通用模型，部署端通过设备配置档适配树莓派、Rockchip/香橙派、地瓜机器人 RDK、MaixCAM、NVIDIA Jetson、Intel OpenVINO 等运行时。
+MyAutoTrain 是一个面向 Windows、Ubuntu 和多种边缘部署平台的 YOLO 训练工具，把数据检查、半自动标注、模型训练、模型资产追踪、多平台导出和测试放在同一个网页中。训练端负责生成通用模型，部署端通过设备配置档适配树莓派、Rockchip/香橙派、地瓜机器人 RDK、MaixCAM、NVIDIA Jetson、Intel OpenVINO 等运行时。
 
 > 当前仍处于公开发布前的工程化阶段。设备配置档表示“已有导出路线”，不等于所有板卡均已完成真机验证；请查看[设备适配文档](docs/DEVICE_ADAPTERS.md)。
 
@@ -60,6 +60,7 @@ MyAutoTrain-日期时间.zip
 - [兼容性说明](docs/COMPATIBILITY.md)：系统、Python、GPU、依赖和已知限制。
 - [使用说明](docs/USAGE.md)：Windows/Ubuntu 安装、训练、测试、导出和排错。
 - [设备适配与模型导出](docs/DEVICE_ADAPTERS.md)：树莓派、Rockchip、RDK、MaixCAM、Jetson、OpenVINO。
+- [数据集与模型资产](docs/MODEL_ASSETS.md)：训练清单、历史输出扫描和测试/部署快捷操作。
 - [半自动标注说明](docs/SEMI_AUTO_LABELING.md)：质量检查、复核流程和已知边界。
 - [优化路线图](docs/ROADMAP.md)：公开发布前、设备适配、数据与工程化计划。
 - [参与贡献](CONTRIBUTING.md) 与 [安全说明](SECURITY.md)：设备验证要求、代码来源和本地服务边界。

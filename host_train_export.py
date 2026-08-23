@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import datetime as dt
+import hashlib
+import json
 import os
 import random
 import shlex
@@ -737,6 +740,93 @@ def prepare_existing_yolo(dataset_yaml: Path, out: Path, copy_dataset: bool = Fa
     return normalized_yaml, train_images
 
 
+def read_training_metrics(results_csv: Path) -> dict:
+    if not results_csv.is_file():
+        return {}
+    try:
+        with results_csv.open("r", encoding="utf-8-sig", newline="") as handle:
+            rows = list(csv.DictReader(handle))
+    except (OSError, csv.Error):
+        return {}
+    if not rows:
+        return {}
+    metrics = {}
+    for raw_key, raw_value in rows[-1].items():
+        key = str(raw_key or "").strip()
+        value = str(raw_value or "").strip()
+        if not key or not value:
+            continue
+        try:
+            metrics[key] = int(value) if value.isdigit() else float(value)
+        except ValueError:
+            metrics[key] = value
+    return metrics
+
+
+def write_training_manifest(
+    args, out: Path, timestamp: str, dataset_root: Path, dataset_source: Path,
+    run_dir: Path, training_images: list[Path] | None = None,
+) -> Path:
+    classes_path = out / "classes.txt"
+    classes = [line.strip() for line in classes_path.read_text(encoding="utf-8-sig").splitlines() if line.strip()]
+    source_key = f"{dataset_root}|{dataset_source}".encode("utf-8", errors="replace")
+    dataset_id = hashlib.sha256(source_key).hexdigest()[:12]
+    training_images = training_images or []
+    version_hash = hashlib.sha256(("\n".join(classes) + f"\ncount={len(training_images)}").encode("utf-8"))
+    if training_images:
+        step = max(1, len(training_images) // 256)
+        for image_path in training_images[::step][:256]:
+            try:
+                stat = image_path.stat()
+                version_hash.update(f"{image_path.name}|{stat.st_size}|{stat.st_mtime_ns}\n".encode("utf-8", errors="replace"))
+            except OSError:
+                continue
+    results_csv = out / "results.csv"
+    manifest = {
+        "schema_version": 1,
+        "kind": "training_run",
+        "run_id": timestamp,
+        "created_at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
+        "status": "stopped_exported" if args.stop_export_signal and Path(args.stop_export_signal).exists() else "completed",
+        "output_dir": str(out.resolve()),
+        "dataset": {
+            "id": dataset_id,
+            "name": dataset_source.parent.name if dataset_source.is_file() else dataset_source.name,
+            "root": str(dataset_root),
+            "source": str(dataset_source),
+            "task": args.train_task,
+            "classes": classes,
+            "image_count": len(training_images),
+            "version": version_hash.hexdigest()[:12],
+        },
+        "training": {
+            "task": args.train_task,
+            "project_name": args.project_name,
+            "model_name": args.model_name or args.project_name,
+            "base_model": args.base_model,
+            "input_size": [args.img_height, args.img_width],
+            "epochs_requested": args.epochs,
+            "batch": args.batch,
+            "workers": args.workers,
+            "lr0": args.lr0,
+            "device": args.train_device,
+            "mode": args.train_mode,
+        },
+        "metrics": read_training_metrics(results_csv),
+        "artifacts": {
+            "pt": f"{args.model_name or args.project_name}.pt",
+            "onnx": f"{args.model_name or args.project_name}.onnx",
+            "classes": "classes.txt",
+            "results_csv": "results.csv" if results_csv.is_file() else "",
+            "args_yaml": "args.yaml" if (out / "args.yaml").is_file() else "",
+            "plots": "train_plots",
+        },
+    }
+    manifest_path = out / "training_manifest.json"
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return manifest_path
+
+
 
 def run_train_stage(args, script_root: Path):
     dataset_root = Path(args.dataset_root).resolve()
@@ -798,6 +888,10 @@ def run_train_stage(args, script_root: Path):
     run_dir = best_pt.parent.parent if args.train_mode != "remote-windows" else best_pt.parent / "train_plots"
     plot_dir = out / "train_plots"
     plot_dir.mkdir(parents=True, exist_ok=True)
+    for artifact_name in ("results.csv", "args.yaml"):
+        artifact = run_dir / artifact_name
+        if artifact.is_file():
+            shutil.copy2(artifact, out / artifact_name)
     for pattern in ("*.png", "*.jpg", "*.jpeg"):
         for artifact in run_dir.glob(pattern):
             if artifact.is_file():
@@ -805,18 +899,25 @@ def run_train_stage(args, script_root: Path):
 
     calib_dir = out / "calib_images"
     calib_dir.mkdir(parents=True, exist_ok=True)
-    train_images = train_images[:200]
-    if not train_images:
+    training_images = list(train_images)
+    calibration_images = training_images[:200]
+    if not calibration_images:
         raise SystemExit("No calibration image copied")
-    for img in train_images:
+    for img in calibration_images:
         target_name = f"{img.parent.name}_{img.name}" if args.train_task == "classify" else img.name
         shutil.copy2(img, calib_dir / target_name)
     test_image = out / "test.jpg"
-    shutil.copy2(train_images[0], test_image)
+    shutil.copy2(calibration_images[0], test_image)
 
     vm_script = script_root / "vm_convert_pack.sh"
     if vm_script.exists():
         shutil.copy2(vm_script, out / "vm_convert_pack.sh")
+
+    if args.dataset_yaml:
+        dataset_source = Path(args.dataset_yaml).expanduser().resolve()
+    else:
+        dataset_source = images_dir
+    training_manifest = write_training_manifest(args, out, timestamp, dataset_root, dataset_source, run_dir, training_images)
 
     print(f"TRAIN_OUTPUT_DIR={out}", flush=True)
     print(f"TRAIN_PLOT_DIR={plot_dir}", flush=True)
@@ -825,6 +926,7 @@ def run_train_stage(args, script_root: Path):
     print(f"TRAIN_CLASSES={out / 'classes.txt'}", flush=True)
     print(f"TRAIN_CALIB_DIR={calib_dir}", flush=True)
     print(f"TRAIN_TEST_IMAGE={test_image}", flush=True)
+    print(f"TRAIN_MANIFEST={training_manifest}", flush=True)
     return {
         "timestamp": timestamp,
         "out": out,

@@ -32,6 +32,7 @@ import cv2
 import yaml
 
 from device_profiles import public_device_profiles
+from model_assets import collect_model_assets, register_asset_manifest, register_asset_root
 
 
 
@@ -60,6 +61,7 @@ TEST_SCRIPT = SCRIPT_ROOT / "model_test.py"
 LABEL_SCRIPT = SCRIPT_ROOT / "video_track_label.py"
 DEFAULT_VM_WORK_DIR = "~/myautotrain/maixcam_jobs"
 USER_DEFAULTS_FILE = SCRIPT_ROOT / "train_panel_defaults.json"
+MODEL_REGISTRY_FILE = SCRIPT_ROOT / "model_registry.json"
 STOP_EXPORT_SIGNAL_FILE = SCRIPT_ROOT / ".train_stop_export.signal"
 LATEST_JOB_LOG_FILE = SCRIPT_ROOT / "logs" / "latest_job.log"
 VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".wmv", ".flv", ".webm", ".m4v", ".mpg", ".mpeg"}
@@ -98,6 +100,7 @@ DEFAULT_VALUES: dict[str, Any] = {
     "raw_output_dir": "",
     "raw_class_names": "",
     "raw_overwrite": False,
+    "asset_scan_root": "",
 
     "project_name": "my_yolo_project",
     "model_name": "my_yolo_model",
@@ -401,6 +404,7 @@ def label_object_data(obj: LabelTrackObject) -> dict[str, Any]:
 
 LABEL_SESSIONS: dict[str, dict[str, Any]] = {}
 LABEL_SESSIONS_LOCK = threading.RLock()
+MODEL_REGISTRY_LOCK = threading.RLock()
 
 
 MAX_LOG_LINES = 3000
@@ -1413,6 +1417,8 @@ def parse_marker(line: str) -> None:
         "REMOTE_JOB_NAME=": "remote_job_name",
         "REMOTE_WORK_DIR=": "remote_work_dir",
         "TRAIN_MODEL_ONNX=": "model_path",
+        "TRAIN_OUTPUT_DIR=": "train_output_dir",
+        "TRAIN_MANIFEST=": "training_manifest",
         "TRAIN_PLOT_DIR=": "train_plot_dir",
         "TRAIN_CLASSES=": "classes_path",
         "TRAIN_CALIB_DIR=": "calib_dir",
@@ -1438,6 +1444,12 @@ def parse_marker(line: str) -> None:
                     STATE["values"]["model_path"] = value
                 if key == "test_model":
                     STATE["values"]["deploy_model"] = value
+                if key in {"training_manifest", "deploy_manifest"}:
+                    try:
+                        with MODEL_REGISTRY_LOCK:
+                            register_asset_manifest(MODEL_REGISTRY_FILE, value)
+                    except OSError as exc:
+                        append_log(f"[模型资产] 无法更新本机索引：{exc}\n")
                 return
 
 
@@ -2370,6 +2382,13 @@ def list_train_plots() -> tuple[Path, list[dict[str, Any]]]:
     return plot_dir, items
 
 
+def model_asset_catalog(values: dict[str, Any]) -> dict[str, Any]:
+    roots = [values.get("dataset_root", ""), values.get("asset_scan_root", "")]
+    deployment_roots = [values.get("export_output_dir", ""), SCRIPT_ROOT / "deploy"]
+    with MODEL_REGISTRY_LOCK:
+        return collect_model_assets(MODEL_REGISTRY_FILE, roots, deployment_roots)
+
+
 def send_train_plot(handler: BaseHTTPRequestHandler, plot_dir: Path, name: str) -> None:
     image_path = resolve_under(name, plot_dir)
     if not image_path.is_file() or image_path.suffix.lower() not in TRAIN_IMAGE_EXTENSIONS:
@@ -2597,6 +2616,7 @@ HTML_PAGE = r'''<!doctype html>
 /* MyAutoTrain light theme */
 :root{--bg:#fff8f8;--panel:#ffffff;--panel2:#fff2f2;--text:#302525;--muted:#806e6e;--line:#eedddd;--blue:#e53935;--green:#27a66b;--purple:#ef6b68;--orange:#e88935;--red:#dc2f2f;--shadow:0 16px 42px rgba(126,43,43,.10)}
 body{color:var(--text);background:radial-gradient(circle at 88% 0,#ffe4e4 0,transparent 30%),linear-gradient(180deg,#fffafa,#fff4f4);font-size:14px}.wrap{width:min(1240px,calc(100% - 32px));padding:22px 0 32px}.hero{grid-template-columns:1fr;margin-bottom:16px}.card{background:var(--panel);border-color:var(--line);box-shadow:var(--shadow);border-radius:20px;backdrop-filter:none}.title{padding:24px 26px}.guide{padding:14px}.steps{grid-template-columns:repeat(3,1fr)}.step{padding:12px;background:#fffafa;border-color:var(--line);border-radius:14px}.num{border-radius:10px;color:#fff;background:linear-gradient(135deg,#e53935,#f06a66)}h1{font-size:36px;margin:14px 0 8px;color:#291f1f}.subtitle,.hint,.mini,.step span{color:var(--muted)}.eyebrow{color:#b32424;background:#fff0f0;border-color:#f3cccc}.eyebrow .dot{background:#e53935;box-shadow:0 0 0 4px #ffe2e2}.layout{grid-template-columns:220px 1fr;gap:16px}.side{padding:12px}.nav{gap:6px}.nav button{padding:13px 14px;border-radius:13px}.nav button:hover{background:#fff5f5;color:#5d4141}.nav button.active{color:#b82121;background:#fff0f0;border-color:#f0cccc}.nav button span{font-size:11px;color:#bca4a4}.status{background:#fffafa;border-color:var(--line);border-radius:14px}.pill.idle{color:#825f5f;background:#fff}.pill.run{color:#137a4c;background:#effaf4;border-color:#bce7cf}.pill.run .dot{background:#27a66b}.section{padding:22px}.section h2{color:#2d2222}.onboarding{background:linear-gradient(135deg,#fff0f0,#fffafa);border-color:#f0cccc;border-radius:16px}.preset{color:#674b4b;background:#fff;border-color:#e9d4d4}.preset:hover{color:#b82121;border-color:#e9a9a9;background:#fff3f3}.advanced-toggle{color:#b82121}label{color:#5f4848;font-weight:650}input,select{color:#352828;background:#fff;border-color:#e7d4d4;border-radius:12px}input:focus,select:focus{border-color:#e45757;box-shadow:0 0 0 4px rgba(229,57,53,.10)}.choice span{color:#745e5e;background:#fff;border-color:#e8d7d7;border-radius:12px}.choice input:checked+span{color:#b82121;border-color:#e79a9a;background:#fff0f0}.btn{color:#5a4242;background:#fff;border-color:#e6d0d0;border-radius:12px}.btn:hover{background:#fff5f5}.btn.primary,.btn.green,.btn.blue{color:#fff;background:linear-gradient(135deg,#d92f2f,#ed625e);border:0}.btn.red{color:#bd2525;background:#fff;border-color:#e7a6a6}.progress-card,.panel{background:#fffafa;border-color:#eedddd;border-radius:16px}.metrics-grid div,.quick-help div{background:#fff;border-color:#eadada}.metrics-grid b,.quick-help b,.marker b,.video-item b{color:#3a2b2b}.bar{background:#f3e7e7;border-color:#ead4d4}.bar div{background:linear-gradient(90deg,#e53935,#f27a74)}.readiness .check-item{background:#fff;border-color:#eadada}.check-item.ok .check-icon{background:#eaf8f0;color:#168354}.check-item.warn .check-icon{background:#fff3e6;color:#b76a1e}.check-item.error .check-icon{background:#fff0f0;color:#c82d2d}.last-error{color:#b62929;background:#fff1f1;border-color:#efc5c5}.marker,.sample,.video-item,.label-object{background:#fff;border-color:#eadada}.sample .delete{color:#b62929;background:#fff1f1;border-color:#efc5c5}.empty{border-color:#e4cfcf}.cmd,.log{color:#5d3c3c;background:#fffafa;border-color:#e7d3d3}.toast{color:#fff;background:#b82d2d;border-color:#a52424}.current-video,.label-status span{color:#9f2727;background:#fff0f0;border-color:#efcaca}.video-preview-box{color:var(--muted);background:#fffafa;border-color:#e8d5d5}.play-button{background:#e53935;box-shadow:0 12px 28px rgba(152,32,32,.25)}.progress-head b,.panel h3{color:#392a2a}.label-stage{border-color:#e4d0d0}.field.full>.onboarding{margin-bottom:0}@media(max-width:980px){.steps{grid-template-columns:1fr}.layout{grid-template-columns:1fr}.side{position:static}.nav{grid-template-columns:repeat(3,1fr)}.nav button{justify-content:center;gap:7px}.status{margin-top:10px}}@media(max-width:620px){.nav{grid-template-columns:1fr 1fr}.wrap{width:min(100% - 20px,1240px)}h1{font-size:29px}.metrics-grid{grid-template-columns:repeat(2,1fr)}}
+.asset-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.asset-summary div{padding:15px;border:1px solid var(--line);border-radius:15px;background:#fffafa}.asset-summary span{display:block;color:var(--muted);font-size:12px}.asset-summary b{display:block;margin-top:4px;font-size:25px}.asset-library{display:grid;gap:16px;margin-top:18px}.asset-dataset{border:1px solid var(--line);border-radius:18px;background:#fffafa;padding:17px}.asset-dataset-head{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;flex-wrap:wrap}.asset-dataset-head h3{margin:0 0 5px;font-size:19px}.asset-path{color:var(--muted);font-size:12px;overflow-wrap:anywhere}.asset-badges{display:flex;gap:7px;flex-wrap:wrap}.asset-badge{display:inline-flex;padding:5px 8px;border-radius:999px;background:#fff;border:1px solid var(--line);font-size:11px;color:#765f5f}.asset-badge.ok{color:#167a4d;background:#eef9f3;border-color:#c4e8d3}.asset-badge.warn{color:#a85c18;background:#fff6e9;border-color:#f2d7b6}.asset-run-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:12px;margin-top:14px}.asset-run{border:1px solid var(--line);border-radius:15px;background:#fff;padding:14px;min-width:0}.asset-run h4{margin:0;font-size:16px}.asset-run-meta{display:grid;gap:5px;margin:10px 0;color:var(--muted);font-size:12px}.artifact-row{display:grid;gap:7px;padding:9px 0;border-top:1px solid #f0e2e2}.artifact-name{display:flex;justify-content:space-between;gap:8px;font-size:12px}.artifact-name b{overflow-wrap:anywhere}.asset-actions{display:flex;gap:7px;flex-wrap:wrap}.asset-actions .btn{padding:7px 10px;font-size:11px}.asset-deployments{margin-top:8px;padding-top:8px;border-top:1px dashed var(--line);font-size:12px;color:var(--muted)}@media(max-width:760px){.asset-summary{grid-template-columns:repeat(2,1fr)}.asset-run-grid{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -2605,8 +2625,8 @@ body{color:var(--text);background:radial-gradient(circle at 88% 0,#ffe4e4 0,tran
     <div class="card title">
       <div id="connectionBadge" class="eyebrow"><span class="dot"></span><span>面板已连接 · 本机端口 8989</span></div>
 
-      <h1>MyAutoTrain 团队训练平台</h1>
-      <p class="subtitle">从数据准备到模型测试都在这里完成。第一次使用只需选择数据，系统会自动检查环境并使用可用的训练设备。</p>
+      <h1>MyAutoTrain 多平台模型训练工具</h1>
+      <p class="subtitle">从数据准备、训练资产追踪到多设备部署都在这里完成。每次训练会记录数据集与模型的对应关系，方便后续测试、导出和复现。</p>
     </div>
     <div class="card guide">
       <div class="steps">
@@ -2622,10 +2642,11 @@ body{color:var(--text);background:radial-gradient(circle at 88% 0,#ffe4e4 0,tran
       <div class="nav">
         <button data-tab="train" class="active">开始训练 <span>01</span></button>
         <button data-tab="dataset">准备数据 <span>02</span></button>
-        <button data-tab="test">测试模型 <span>03</span></button>
-        <button data-tab="label">辅助标注 <span>04</span></button>
-        <button data-tab="convert">部署与导出 <span>05</span></button>
-        <button data-tab="logs">运行记录 <span>06</span></button>
+        <button data-tab="assets">模型资产 <span>03</span></button>
+        <button data-tab="test">测试模型 <span>04</span></button>
+        <button data-tab="label">辅助标注 <span>05</span></button>
+        <button data-tab="convert">部署与导出 <span>06</span></button>
+        <button data-tab="logs">运行记录 <span>07</span></button>
 
       </div>
       <div class="status">
@@ -2760,6 +2781,22 @@ body{color:var(--text);background:radial-gradient(circle at 88% 0,#ffe4e4 0,tran
           <div class="btns"><button class="btn" onclick="inspectRawDataset()">识别并检查</button></div>
           <div class="btns"><button id="raw-import-button" class="btn green" onclick="importRawDataset()">直接导入训练配置</button><button id="raw-convert-button" class="btn advanced-setting" onclick="convertRawDataset()">旧式 TXT 转 XML</button></div>
         </div>
+      </section>
+
+      <section id="tab-assets" class="tab card section">
+        <h2>数据集与模型资产</h2><p class="hint">独立查看“哪个数据集训练出了哪些模型”。新训练会写入可追溯清单；旧版 `outputs_时间` 文件夹也能扫描，但会标记为“推断关联”。</p>
+        <div class="asset-summary">
+          <div><span>数据集</span><b id="asset-dataset-count">0</b></div>
+          <div><span>训练记录</span><b id="asset-run-count">0</b></div>
+          <div><span>模型文件</span><b id="asset-model-count">0</b></div>
+          <div><span>部署产物</span><b id="asset-deployment-count">0</b></div>
+        </div>
+        <div class="grid" style="margin-top:18px">
+          <div class="field full"><label>补充扫描目录</label><div class="input-action"><input id="asset_scan_root" placeholder="选择包含 outputs_训练时间 文件夹的数据集目录"><button class="btn" onclick="pickAssetRoot()">选择文件夹</button><button class="btn blue" onclick="scanModelAssets()">扫描并记住</button></div><div class="mini">当前训练数据目录会自动扫描；这里用于补充旧数据集或移动后的训练输出。</div></div>
+          <div class="field full"><label>搜索</label><input id="asset-search" placeholder="按数据集、模型、类别、任务或路径筛选" oninput="renderModelAssets()"></div>
+        </div>
+        <div class="actions"><span class="mini" id="asset-roots-note">尚未读取资产目录</span><button class="btn" onclick="loadModelAssets(true)">刷新资产</button></div>
+        <div id="model-assets" class="asset-library"><div class="empty">正在读取模型资产...</div></div>
       </section>
 
       <section id="tab-convert" class="tab card section">
@@ -2914,12 +2951,13 @@ body{color:var(--text);background:radial-gradient(circle at 88% 0,#ffe4e4 0,tran
 </div>
 <div class="toast" id="toast"></div>
 <script>
-const fields=['dataset_root','train_task','train_images_dir','train_annotations_dir','prepared_dataset_yaml','train_ratio_percent','img_width','img_height','image_resize_mode','epochs','batch','train_workers','patience','lr0','conda_env','base_model','torch_cuda','train_cache','raw_dataset_root','raw_images_dir','raw_labels_dir','raw_output_dir','raw_class_names','project_name','model_name','remote_train_user','remote_train_host','remote_train_port','remote_train_work_dir','deploy_model','deployment_target','export_format','export_chip','export_output_dir','export_data','model_path','classes_path','calib_dir','test_image','vm_user','vm_host','vm_work_dir','test_model','test_image_file','test_image_folder','test_output_dir','camera_index','conf','label_video_dir','label_video','label_camera_index','label_source_type','label_images_input_dir','label_name','label_interval','label_images_dir','label_annotations_dir','label_prefix','label_tracker','label_start_frame','label_max_frames','label_display_scale','label_jpeg_quality'];
+const fields=['dataset_root','train_task','train_images_dir','train_annotations_dir','prepared_dataset_yaml','train_ratio_percent','img_width','img_height','image_resize_mode','epochs','batch','train_workers','patience','lr0','conda_env','base_model','torch_cuda','train_cache','raw_dataset_root','raw_images_dir','raw_labels_dir','raw_output_dir','raw_class_names','asset_scan_root','project_name','model_name','remote_train_user','remote_train_host','remote_train_port','remote_train_work_dir','deploy_model','deployment_target','export_format','export_chip','export_output_dir','export_data','model_path','classes_path','calib_dir','test_image','vm_user','vm_host','vm_work_dir','test_model','test_image_file','test_image_folder','test_output_dir','camera_index','conf','label_video_dir','label_video','label_camera_index','label_source_type','label_images_input_dir','label_name','label_interval','label_images_dir','label_annotations_dir','label_prefix','label_tracker','label_start_frame','label_max_frames','label_display_scale','label_jpeg_quality'];
 
 
 
 let values={};
 let deploymentProfiles=[];
+let modelAssetCatalog={summary:{},roots:[],datasets:[]};
 let labelVideos=[];
 let labelVideoIndex=-1;
 let labelVisibleCount=150;
@@ -2933,6 +2971,16 @@ let deleteConfirmUntil=0;
 
 const rawLabelPrefix={manual:false,value:''};
 function toast(msg){const el=document.getElementById('toast');el.textContent=msg;el.classList.add('show');setTimeout(()=>el.classList.remove('show'),2600)}
+function escapeHtml(value){return String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]))}
+function assetTime(value){return String(value||'-').replace('T',' ').replace(/([+-]\d\d:\d\d|Z)$/,'')}
+function metricValue(metrics,patterns,exclude=[]){for(const [key,value] of Object.entries(metrics||{})){const lower=key.toLowerCase(); if(patterns.some(x=>lower.includes(x))&&!exclude.some(x=>lower.includes(x))) return fmt(value,4)} return ''}
+function assetMetricText(metrics){const parts=[]; const map50=metricValue(metrics,['map50'],['map50-95','map50_95']); const map95=metricValue(metrics,['map50-95','map50_95']); const precision=metricValue(metrics,['precision']); const recall=metricValue(metrics,['recall']); const top1=metricValue(metrics,['top1','accuracy_top1']); if(map50) parts.push(`mAP50 ${map50}`); if(map95) parts.push(`mAP50-95 ${map95}`); if(precision) parts.push(`P ${precision}`); if(recall) parts.push(`R ${recall}`); if(top1) parts.push(`Top-1 ${top1}`); return parts.join(' · ')}
+function useModelAsset(path,action,classesPath=''){if(action==='test'){setInputValue('test_model',path); showTab('test'); toast('已填入模型测试页面')}else if(action==='deploy'){setInputValue('deploy_model',path); if(classesPath) setInputValue('classes_path',classesPath); showTab('convert'); toast('已填入部署与导出页面')} saveValues(); updateCommands()}
+async function copyAssetPath(path){try{await navigator.clipboard.writeText(path);toast('路径已复制')}catch(e){toast('无法复制路径')}}
+function renderModelAssets(){const catalog=modelAssetCatalog||{summary:{},datasets:[]},summary=catalog.summary||{}; setText('asset-dataset-count',summary.dataset_count||0);setText('asset-run-count',summary.run_count||0);setText('asset-model-count',summary.model_count||0);setText('asset-deployment-count',summary.deployment_count||0); const roots=document.getElementById('asset-roots-note'); if(roots) roots.textContent=(catalog.roots||[]).length?`已索引 ${(catalog.roots||[]).length} 个目录`:'尚未登记扫描目录'; const box=document.getElementById('model-assets'); if(!box) return; const query=String(document.getElementById('asset-search')?.value||'').trim().toLowerCase(); const datasets=(catalog.datasets||[]).filter(item=>!query||JSON.stringify(item).toLowerCase().includes(query)); box.innerHTML=''; if(!datasets.length){box.innerHTML=`<div class="empty">${query?'没有匹配的模型资产。':'尚未找到训练输出。完成一次新训练，或选择旧数据集目录并点击“扫描并记住”。'}</div>`;return} for(const dataset of datasets){const section=document.createElement('section');section.className='asset-dataset'; const classes=(dataset.classes||[]).slice(0,12).map(name=>`<span class="asset-badge">${escapeHtml(name)}</span>`).join(''); section.innerHTML=`<div class="asset-dataset-head"><div><h3>${escapeHtml(dataset.name||'未命名数据集')}</h3><div class="asset-path">${escapeHtml(dataset.root||'')}</div>${dataset.source?`<div class="asset-path">来源：${escapeHtml(dataset.source)}</div>`:''}</div><div class="asset-badges"><span class="asset-badge ok">${(dataset.runs||[]).length} 次训练</span>${dataset.image_count?`<span class="asset-badge">${dataset.image_count} 张训练图片</span>`:''}${dataset.version?`<span class="asset-badge">版本 ${escapeHtml(dataset.version)}</span>`:''}${(dataset.tasks||[]).map(task=>`<span class="asset-badge">${escapeHtml(task==='detect'?'目标检测':task==='classify'?'图像分类':task)}</span>`).join('')}${classes}</div></div>`; const grid=document.createElement('div');grid.className='asset-run-grid'; for(const run of dataset.runs||[]){const card=document.createElement('article');card.className='asset-run'; const t=run.training||{},association=run.association==='manifest'?'清单关联':'推断关联',metricText=assetMetricText(run.metrics); card.innerHTML=`<div class="asset-dataset-head"><h4>${escapeHtml(run.model_name)}</h4><span class="asset-badge ${run.association==='manifest'?'ok':'warn'}">${association}</span></div><div class="asset-run-meta"><span>${assetTime(run.created_at)} · ${escapeHtml(run.status)}</span><span>${t.input_size?`${t.input_size[1]}×${t.input_size[0]}`:'尺寸未知'}${t.base_model?' · 基础 '+escapeHtml(t.base_model):''}${t.epochs_requested?' · '+t.epochs_requested+' epochs':''}${t.batch?' · batch '+t.batch:''}</span>${metricText?`<span>${escapeHtml(metricText)}</span>`:''}<span>${escapeHtml(run.output_dir)}</span></div>`; const classesArtifact=(run.artifacts||[]).find(item=>item.kind==='classes'&&item.exists); for(const artifact of (run.artifacts||[]).filter(item=>['pt','onnx'].includes(item.kind))){const row=document.createElement('div');row.className='artifact-row';row.innerHTML=`<div class="artifact-name"><b>${escapeHtml(artifact.name)}</b><span>${artifact.exists?artifact.size_mb+' MB':'文件缺失'}</span></div>`; const actions=document.createElement('div');actions.className='asset-actions'; if(artifact.exists&&artifact.kind==='pt'){const test=document.createElement('button');test.className='btn';test.textContent='用于测试';test.onclick=()=>useModelAsset(artifact.path,'test',classesArtifact?.path||'');actions.appendChild(test)} if(artifact.exists){const deploy=document.createElement('button');deploy.className='btn';deploy.textContent='用于部署';deploy.onclick=()=>useModelAsset(artifact.path,'deploy',classesArtifact?.path||''); const copy=document.createElement('button');copy.className='btn';copy.textContent='复制路径';copy.onclick=()=>copyAssetPath(artifact.path);actions.append(deploy,copy)} row.appendChild(actions);card.appendChild(row)} if((run.deployments||[]).length){const deployments=document.createElement('div');deployments.className='asset-deployments';deployments.textContent='已部署：'+run.deployments.map(item=>`${item.target_label} / ${String(item.format).toUpperCase()}${item.chip?' / '+item.chip:''}`).join('；');card.appendChild(deployments)} grid.appendChild(card)} section.appendChild(grid);box.appendChild(section)}}
+async function loadModelAssets(showMessage=false){try{const r=await fetch('/api/model-assets');if(!r.ok) throw new Error(`HTTP ${r.status}`);modelAssetCatalog=await r.json();renderModelAssets();if(showMessage) toast(`已读取 ${modelAssetCatalog.summary?.run_count||0} 条训练记录`)}catch(e){toast(e.message)}}
+async function pickAssetRoot(){try{const j=await api('/api/pick-asset-root',{values:collect()});if(j.path){setInputValue('asset_scan_root',j.path);await saveValues()}else toast('未选择文件夹')}catch(e){toast(e.message)}}
+async function scanModelAssets(){try{const v=collect();const j=await api('/api/model-assets/scan',{root:v.asset_scan_root,values:v});apply(j.values||{});modelAssetCatalog=j.catalog||modelAssetCatalog;renderModelAssets();await saveValues();toast(`扫描完成：${modelAssetCatalog.summary?.run_count||0} 条训练记录`)}catch(e){toast(e.message)}}
 function updateSplitRatio(){const el=document.getElementById('train_ratio_percent'); const text=document.getElementById('split_ratio_text'); if(!el||!text) return; let train=Math.round(Number(el.value||80)); if(!Number.isFinite(train)) train=80; train=Math.max(1,Math.min(100,train)); if(String(train)!==el.value) el.value=String(train); text.textContent=`训练 ${train}% / 验证 ${100-train}%`}
 function fmt(v,d=3){return v===null||v===undefined||v===''||Number.isNaN(Number(v))?'-':Number(v).toFixed(d).replace(/\.0+$/,'').replace(/(\.\d*?)0+$/,'$1')}
 function setText(id,value){const el=document.getElementById(id); if(el) el.textContent=value}
@@ -3040,7 +3088,7 @@ async function loadTrainPlots(){try{const r=await fetch('/api/train-plots'); con
 function scheduleLabelResultsRefresh(){clearTimeout(labelResultsTimer); labelResultsTimer=setTimeout(()=>loadLabelResults(),350)}
 async function refreshState(){try{const r=await fetch('/api/state'); if(!r.ok) throw new Error(`HTTP ${r.status}`); const s=await r.json(); setConnectionState(true); apply(s.values||{}); updateTrainProgress(s.train_progress||{}); const log=document.getElementById('log'); log.textContent=(s.logs||[]).join(''); log.scrollTop=log.scrollHeight; const pill=document.getElementById('runPill'); pill.className='pill '+(s.running?'run':'idle'); pill.querySelector('span:last-child').textContent=s.running?'运行中':'空闲'; const jobNames={train:'模型训练',export:'多平台导出',convert:'MaixCAM 专用转换',test:'模型测试',label:'半自动标注',train_ssh:'训练 SSH 检查',vm_ssh:'转换 SSH 检查'}; document.getElementById('jobInfo').textContent=s.job?`${jobNames[s.job]||s.job} · 开始 ${s.started_at||'-'}${s.finished_at?' · 结束 '+s.finished_at:''}${s.exit_code!==null&&s.exit_code!==undefined?' · 退出码 '+s.exit_code:''}`:'暂无任务'; const errorBox=document.getElementById('lastError'); const failed=!s.running&&s.job&&s.exit_code!==null&&Number(s.exit_code)!==0; if(s.last_error||failed){errorBox.hidden=false; errorBox.textContent=s.last_error||`上次任务失败（退出码 ${s.exit_code}），请打开“运行日志”查看具体原因。`}else errorBox.hidden=true; const box=document.getElementById('markers'); box.innerHTML=''; for(const [k,v] of Object.entries(s.markers||{})){const div=document.createElement('div'); div.className='marker'; div.innerHTML=`<b>${k}</b><span>${v}</span>`; box.appendChild(div)}}catch(e){setConnectionState(false); const pill=document.getElementById('runPill'); if(pill){pill.className='pill idle';pill.querySelector('span:last-child').textContent='未连接'} const errorBox=document.getElementById('lastError'); if(errorBox){errorBox.hidden=false;errorBox.textContent='训练面板未运行。请双击 start_train_panel.cmd，然后刷新此页面。'}}}
 function copyLogs(){navigator.clipboard.writeText(document.getElementById('log').textContent);toast('日志已复制')}
-function showTab(name){const target=document.getElementById('tab-'+name); if(!target) name='train'; document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));document.getElementById('tab-'+name).classList.add('active');document.querySelectorAll('.nav button').forEach(x=>x.classList.toggle('active',x.dataset.tab===name)); localStorage.setItem('myAutoTrainTab',name); if(name==='label') loadLabelResults()}
+function showTab(name){const target=document.getElementById('tab-'+name); if(!target) name='train'; document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));document.getElementById('tab-'+name).classList.add('active');document.querySelectorAll('.nav button').forEach(x=>x.classList.toggle('active',x.dataset.tab===name)); localStorage.setItem('myAutoTrainTab',name); if(name==='label') loadLabelResults(); if(name==='assets') loadModelAssets()}
 
 document.querySelectorAll('.nav button').forEach(b=>b.onclick=()=>showTab(b.dataset.tab));
 document.querySelectorAll('input,select').forEach(el=>{const handler=()=>{if(el.id==='label_prefix') rawLabelPrefix.manual=true; if((el.id==='train_images_dir'||el.id==='train_annotations_dir')&&String(values.prepared_dataset_yaml||'').trim()){setInputValue('prepared_dataset_yaml',''); updatePreparedDatasetUI()} if(el.name==='train_task') updateTrainTaskUI(); if(el.name==='label_source_type') updateLabelSourceUI(); collect(); updateCurrentVideo(); saveValues(); updateCommands(); if(['train_images_dir','base_model','img_width','img_height','image_resize_mode','batch','train_cache'].includes(el.id)||el.name==='train_device'||el.name==='train_task') scheduleResourceEstimate(); if(['label_images_dir','label_annotations_dir','label_annotations_dir_images','label_images_input_dir'].includes(el.id)) scheduleLabelResultsRefresh()}; el.addEventListener('input',handler); el.addEventListener('change',handler)});
@@ -3105,6 +3153,11 @@ class PanelHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/device-profiles":
             self.send_json({"items": public_device_profiles()})
+            return
+        if parsed.path == "/api/model-assets":
+            with STATE_LOCK:
+                values = STATE["values"].copy()
+            self.send_json(model_asset_catalog(values))
             return
         if parsed.path == "/api/train-plots":
             _, items = list_train_plots()
@@ -3337,6 +3390,24 @@ class PanelHandler(BaseHTTPRequestHandler):
             if self.path == "/api/pick-deploy-output-dir":
                 values = clean_values(body.get("values"))
                 self.send_json({"path": pick_directory(values.get("export_output_dir", ""), "选择部署模型输出目录")})
+                return
+            if self.path == "/api/pick-asset-root":
+                values = clean_values(body.get("values"))
+                initial = values.get("asset_scan_root", "") or values.get("dataset_root", "")
+                self.send_json({"path": pick_directory(initial, "选择包含 outputs_训练时间 文件夹的数据集目录")})
+                return
+            if self.path == "/api/model-assets/scan":
+                values = clean_values(body.get("values"))
+                raw_root = str(body.get("root") or values.get("asset_scan_root") or values.get("dataset_root") or "").strip()
+                root = Path(raw_root).expanduser().resolve()
+                if not root.is_dir():
+                    raise ValueError("模型资产扫描目录必须是有效文件夹。")
+                with MODEL_REGISTRY_LOCK:
+                    register_asset_root(MODEL_REGISTRY_FILE, root)
+                values["asset_scan_root"] = str(root)
+                with STATE_LOCK:
+                    STATE["values"] = values.copy()
+                self.send_json({"ok": True, "catalog": model_asset_catalog(values), "values": values})
                 return
             if self.path == "/api/pick-test-image-folder":
                 values = clean_values(body.get("values"))
