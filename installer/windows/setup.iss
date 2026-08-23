@@ -40,19 +40,69 @@ Name: "{autoprograms}\{#ProductName}"; Filename: "{app}\Desktop\YOLOTeamTraining
 Name: "{autodesktop}\{#ProductName}"; Filename: "{app}\Desktop\YOLOTeamTrainingPlatform.exe"; WorkingDir: "{app}"
 
 [Run]
-Filename: "{app}\Desktop\YOLOTeamTrainingPlatform.exe"; Description: "启动 {#ProductName}"; Flags: postinstall nowait skipifsilent
+Filename: "{app}\Desktop\YOLOTeamTrainingPlatform.exe"; Description: "启动 {#ProductName}"; Flags: postinstall nowait skipifsilent; Check: RuntimeInstallationSucceeded
 
 [UninstallRun]
 Filename: "{app}\Runtime\Python\Scripts\python.exe"; Parameters: """{app}\App\annotation_service.py"" stop"; Flags: runhidden waituntilterminated skipifdoesntexist; RunOnceId: "StopAnnotationService"
 Filename: "{app}\Runtime\Python\Scripts\python.exe"; Parameters: """{app}\App\panel_service.py"" stop"; Flags: runhidden waituntilterminated skipifdoesntexist; RunOnceId: "StopPanelService"
 
 [Code]
+var
+  RuntimeReady: Boolean;
+  RuntimeProgressPage: TOutputMarqueeProgressWizardPage;
+  RuntimeLogMemo: TNewMemo;
+
+procedure InitializeWizard;
+begin
+  RuntimeProgressPage := CreateOutputMarqueeProgressPage(
+    '正在安装运行环境',
+    '首次安装需要下载模型训练组件，请保持网络连接。');
+  RuntimeProgressPage.SetText('正在准备安装...', '');
+
+  RuntimeLogMemo := TNewMemo.Create(RuntimeProgressPage);
+  RuntimeLogMemo.Parent := RuntimeProgressPage.Surface;
+  RuntimeLogMemo.Left := 0;
+  RuntimeLogMemo.Top := RuntimeProgressPage.ProgressBar.Top +
+    RuntimeProgressPage.ProgressBar.Height + ScaleY(12);
+  RuntimeLogMemo.Width := RuntimeProgressPage.SurfaceWidth;
+  RuntimeLogMemo.Height := RuntimeProgressPage.SurfaceHeight - RuntimeLogMemo.Top;
+  RuntimeLogMemo.Anchors := [akLeft, akTop, akRight, akBottom];
+  RuntimeLogMemo.ReadOnly := True;
+  RuntimeLogMemo.ScrollBars := ssBoth;
+  RuntimeLogMemo.WordWrap := False;
+  RuntimeLogMemo.Font.Name := 'Consolas';
+  RuntimeLogMemo.Font.Size := 8;
+end;
+
+procedure AppendRuntimeLog(const S: String);
+begin
+  if RuntimeLogMemo.Lines.Count >= 3000 then
+    RuntimeLogMemo.Lines.Delete(0);
+  RuntimeLogMemo.Lines.Add(S);
+  RuntimeLogMemo.SelStart := Length(RuntimeLogMemo.Text);
+  RuntimeLogMemo.SelLength := 0;
+  Log(S);
+end;
+
+procedure RuntimeProcessLog(const S: String; const Error, FirstLine: Boolean);
+begin
+  if Error then
+    AppendRuntimeLog('[日志读取错误] ' + S)
+  else
+    AppendRuntimeLog(S);
+end;
+
 function GetDefaultInstallDir(Param: String): String;
 begin
   if DirExists('D:\') then
     Result := 'D:\YOLOTeamTrainingPlatform'
   else
     Result := ExpandConstant('{autopf}\YOLOTeamTrainingPlatform');
+end;
+
+function RuntimeInstallationSucceeded(): Boolean;
+begin
+  Result := RuntimeReady;
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
@@ -64,27 +114,43 @@ begin
   if CurStep <> ssPostInstall then
     exit;
 
-  WizardForm.StatusLabel.Caption := '正在安装 .NET 8 Desktop Runtime...';
-  ExtractTemporaryFile('windowsdesktop-runtime-8-win-x64.exe');
-  if not Exec(ExpandConstant('{tmp}\windowsdesktop-runtime-8-win-x64.exe'), '/install /quiet /norestart', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
-    RaiseException('无法启动 .NET 8 Desktop Runtime 安装程序。');
-  if (ResultCode <> 0) and (ResultCode <> 3010) then
-    RaiseException(Format('.NET 8 Desktop Runtime 安装失败，退出码 %d。', [ResultCode]));
+  RuntimeReady := False;
+  RuntimeLogMemo.Clear;
+  RuntimeProgressPage.Show;
+  RuntimeProgressPage.Animate;
+  try
+    RuntimeProgressPage.SetText('正在安装 .NET 8 Desktop Runtime...', '步骤 1 / 3');
+    AppendRuntimeLog('==> 安装 .NET 8 Desktop Runtime');
+    ExtractTemporaryFile('windowsdesktop-runtime-8-win-x64.exe');
+    if not Exec(ExpandConstant('{tmp}\windowsdesktop-runtime-8-win-x64.exe'), '/install /quiet /norestart', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+      RaiseException('无法启动 .NET 8 Desktop Runtime 安装程序。');
+    if (ResultCode <> 0) and (ResultCode <> 3010) then
+      RaiseException(Format('.NET 8 Desktop Runtime 安装失败，退出码 %d。', [ResultCode]));
+    AppendRuntimeLog(Format('.NET 8 Desktop Runtime 完成（退出码 %d）', [ResultCode]));
 
-  WizardForm.StatusLabel.Caption := '正在安装 Microsoft Edge WebView2 Runtime...';
-  ExtractTemporaryFile('MicrosoftEdgeWebview2Setup.exe');
-  if not Exec(ExpandConstant('{tmp}\MicrosoftEdgeWebview2Setup.exe'), '/silent /install', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
-    RaiseException('无法启动 WebView2 Runtime 安装程序。');
-  if ResultCode <> 0 then
-    RaiseException(Format('WebView2 Runtime 安装失败，退出码 %d。', [ResultCode]));
+    RuntimeProgressPage.SetText('正在安装 Microsoft Edge WebView2 Runtime...', '步骤 2 / 3');
+    AppendRuntimeLog('==> 安装 Microsoft Edge WebView2 Runtime');
+    ExtractTemporaryFile('MicrosoftEdgeWebview2Setup.exe');
+    if not Exec(ExpandConstant('{tmp}\MicrosoftEdgeWebview2Setup.exe'), '/silent /install', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+      RaiseException('无法启动 WebView2 Runtime 安装程序。');
+    if ResultCode <> 0 then
+      RaiseException(Format('WebView2 Runtime 安装失败，退出码 %d。', [ResultCode]));
+    AppendRuntimeLog('Microsoft Edge WebView2 Runtime 完成');
 
-  WizardForm.StatusLabel.Caption := '正在安装 Python、PyTorch、ONNX Runtime 与平台依赖，首次安装可能需要较长时间...';
-  PowerShellPath := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
-  RuntimeScript := ExpandConstant('{app}\App\install_runtime.ps1');
-  if not Exec(PowerShellPath,
-    '-NoProfile -ExecutionPolicy Bypass -File "' + RuntimeScript + '" -InstallRoot "' + ExpandConstant('{app}') + '" -NoStart',
-    ExpandConstant('{app}\App'), SW_HIDE, ewWaitUntilTerminated, ResultCode) then
-    RaiseException('无法启动平台运行环境安装程序。');
-  if ResultCode <> 0 then
-    RaiseException(Format('平台运行环境安装失败，退出码 %d。请查看 Workspace\logs\installation.log。', [ResultCode]));
+    RuntimeProgressPage.SetText('正在安装 Python、PyTorch、ONNX Runtime 与平台依赖...', '步骤 3 / 3 · 首次安装可能需要较长时间');
+    AppendRuntimeLog('==> 安装 Python、PyTorch、ONNX Runtime 与平台依赖');
+    PowerShellPath := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
+    RuntimeScript := ExpandConstant('{app}\App\install_runtime.ps1');
+    if not ExecAndLogOutput(PowerShellPath,
+      '-NoLogo -NoProfile -NonInteractive -OutputFormat Text -ExecutionPolicy Bypass -File "' + RuntimeScript + '" -InstallRoot "' + ExpandConstant('{app}') + '" -NoStart',
+      ExpandConstant('{app}\App'), SW_SHOWNORMAL, ewWaitUntilTerminated, ResultCode, @RuntimeProcessLog) then
+      RaiseException('无法启动平台运行环境安装程序。');
+    if ResultCode <> 0 then
+      RaiseException(Format('平台运行环境安装失败，退出码 %d。请查看 Workspace\logs\installation.log。', [ResultCode]));
+
+    AppendRuntimeLog('安装与系统自检全部完成。');
+    RuntimeReady := True;
+  finally
+    RuntimeProgressPage.Hide;
+  end;
 end;

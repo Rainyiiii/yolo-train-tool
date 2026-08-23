@@ -1,5 +1,13 @@
 # 更新记录
 
+## 3.0.1-beta
+
+- 修复 Windows PowerShell 5.1 将 UTF-8 中文安装脚本错误解码后导致运行环境安装中断的问题。
+- 构建安装包时强制将运行环境入口写为 UTF-8 BOM，并使用 Windows PowerShell 5.1 做发布前语法检查。
+- 安装 Python、PyTorch、ONNX Runtime 等运行依赖失败时，不再错误启动尚未就绪的桌面程序。
+- 安装器新增实时滚动日志页面，可直接查看 .NET、WebView2、Python、PyTorch 和 ONNX Runtime 安装进度。
+- 运行环境探测不再把“尚未安装 PyTorch”的正常状态记录成红色异常。
+
 ## 3.0.0-beta
 
 - 平台统一更名为“YOLO团队训练平台”。

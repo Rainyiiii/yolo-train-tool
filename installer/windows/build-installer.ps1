@@ -38,6 +38,31 @@ foreach ($relative in $runtimeFiles) {
     if (!(Test-Path -LiteralPath $source)) { throw "安装器缺少运行文件：$relative" }
     Copy-Item -LiteralPath $source -Destination (Join-Path $AppStage $relative)
 }
+
+# Inno Setup invokes the runtime installer with Windows PowerShell 5.1.  That
+# host does not reliably detect UTF-8 without a BOM and can corrupt Chinese
+# string literals into parser errors, so make the packaged entry point UTF-8
+# with BOM and validate it with the exact legacy parser used after install.
+$runtimeInstallerStage = Join-Path $AppStage "install_runtime.ps1"
+$runtimeInstallerText = [IO.File]::ReadAllText($runtimeInstallerStage, (New-Object Text.UTF8Encoding($false)))
+[IO.File]::WriteAllText($runtimeInstallerStage, $runtimeInstallerText, (New-Object Text.UTF8Encoding($true)))
+
+$legacyPowerShell = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+if (!(Test-Path -LiteralPath $legacyPowerShell)) { throw "未找到 Windows PowerShell 5.1。" }
+$escapedRuntimeInstallerStage = $runtimeInstallerStage.Replace("'", "''")
+$legacyParserCheck = @"
+`$tokens = `$null
+`$errors = `$null
+[System.Management.Automation.Language.Parser]::ParseFile('$escapedRuntimeInstallerStage', [ref]`$tokens, [ref]`$errors) | Out-Null
+if (`$errors.Count -gt 0) {
+    `$errors | ForEach-Object { Write-Error `$_.Message }
+    exit 1
+}
+"@
+$legacyParserCheckEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($legacyParserCheck))
+& $legacyPowerShell -NoLogo -NoProfile -EncodedCommand $legacyParserCheckEncoded
+if ($LASTEXITCODE -ne 0) { throw "install_runtime.ps1 无法通过 Windows PowerShell 5.1 语法检查。" }
+
 Copy-Item -LiteralPath (Join-Path $RepoRoot "docs") -Destination (Join-Path $AppStage "docs") -Recurse
 $bundledModel = Join-Path $RepoRoot "yolo11n.pt"
 if (Test-Path -LiteralPath $bundledModel) { Copy-Item -LiteralPath $bundledModel -Destination (Join-Path $AppStage "yolo11n.pt") }

@@ -5,7 +5,7 @@
 队友只需要运行：
 
 ```text
-YOLO-Team-Training-Platform-Setup-v3.0.0-beta.exe
+YOLO-Team-Training-Platform-Setup-v3.0.1-beta.exe
 ```
 
 安装器默认选择 `D:\YOLOTeamTrainingPlatform`，并自动完成：
@@ -19,7 +19,7 @@ YOLO-Team-Training-Platform-Setup-v3.0.0-beta.exe
 7. 创建规范化 Workspace；
 8. 创建桌面和开始菜单快捷方式。
 
-首次安装需要联网下载 Python/PyTorch/PyPI 依赖，耗时取决于网络和显卡版本。详细日志位于 `D:\YOLOTeamTrainingPlatform\Workspace\logs\installation.log`。
+首次安装需要联网下载 Python/PyTorch/PyPI 依赖，耗时取决于网络和显卡版本。安装器内的“正在安装运行环境”页面会显示三个阶段和实时滚动输出；完整日志同时写入 `D:\YOLOTeamTrainingPlatform\Workspace\logs\installation.log`。安装失败时平台不会被启动，请保留该日志用于排错。
 
 WebView2 桌面程序只加载本机 `127.0.0.1:8989` 平台页面；外部文档链接交给系统浏览器。下载文件保存到 `Workspace/exports/downloads`。关闭桌面窗口时会停止本机面板和协作标注服务，不删除工作区。
 

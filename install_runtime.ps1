@@ -5,6 +5,9 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
+$Utf8OutputEncoding = New-Object Text.UTF8Encoding($false)
+[Console]::OutputEncoding = $Utf8OutputEncoding
+$OutputEncoding = $Utf8OutputEncoding
 $SourceRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 if ([string]::IsNullOrWhiteSpace($InstallRoot)) { $InstallRoot = $SourceRoot }
 $InstallRoot = [IO.Path]::GetFullPath($InstallRoot)
@@ -38,8 +41,8 @@ $env:PYTHONIOENCODING = "utf-8"
 Start-Transcript -Path $LogFile -Append | Out-Null
 
 function Write-Step([string]$Message) {
-    Write-Host ""
-    Write-Host "==> $Message" -ForegroundColor Red
+    Write-Output ""
+    Write-Output "==> $Message"
 }
 
 function Find-CompatiblePython {
@@ -63,9 +66,9 @@ function Find-CompatiblePython {
 
 try {
     Set-Location $AppRoot
-    Write-Host "YOLO团队训练平台安装器" -ForegroundColor Red
-    Write-Host "程序目录：$AppRoot"
-    Write-Host "工作区：$WorkspaceRoot"
+    Write-Output "YOLO团队训练平台安装器"
+    Write-Output "程序目录：$AppRoot"
+    Write-Output "工作区：$WorkspaceRoot"
 
     $python = Find-CompatiblePython
     if (!$python) {
@@ -107,7 +110,10 @@ try {
     $hasNvidia = $null -ne (Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue)
     $savedErrorPreference = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
-    & $VenvPython -c "import torch" 2>$null
+    # Probe without importing torch.  A missing module then returns exit code 1
+    # without writing a traceback that Windows PowerShell 5.1 reports as a
+    # NativeCommandError in the installation log.
+    & $VenvPython -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('torch') else 1)"
     $torchReady = $LASTEXITCODE -eq 0
     $ErrorActionPreference = $savedErrorPreference
     if (!$torchReady) {
@@ -160,14 +166,14 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "平台启动失败。" }
     }
 
-    Write-Host ""
-    Write-Host "安装完成。" -ForegroundColor Green
+    Write-Output ""
+    Write-Output "安装完成。"
     Stop-Transcript | Out-Null
     exit 0
 } catch {
-    Write-Host ""
-    Write-Host "安装未完成：$($_.Exception.Message)" -ForegroundColor Red
-    Write-Host "安装日志：$LogFile"
+    Write-Output ""
+    Write-Output "安装未完成：$($_.Exception.Message)"
+    Write-Output "安装日志：$LogFile"
     try { Stop-Transcript | Out-Null } catch {}
     exit 1
 }
