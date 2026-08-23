@@ -33,6 +33,7 @@ import yaml
 
 from device_profiles import public_device_profiles
 from model_assets import collect_model_assets, register_asset_manifest, register_asset_root
+from annotation_service import status_payload as annotation_service_status
 
 
 
@@ -59,6 +60,7 @@ WORKFLOW_SCRIPT = SCRIPT_ROOT / "host_train_export.py"
 EXPORT_SCRIPT = SCRIPT_ROOT / "export_model.py"
 TEST_SCRIPT = SCRIPT_ROOT / "model_test.py"
 LABEL_SCRIPT = SCRIPT_ROOT / "video_track_label.py"
+ANNOTATION_SERVICE_SCRIPT = SCRIPT_ROOT / "annotation_service.py"
 DEFAULT_VM_WORK_DIR = "~/myautotrain/maixcam_jobs"
 USER_DEFAULTS_FILE = SCRIPT_ROOT / "train_panel_defaults.json"
 MODEL_REGISTRY_FILE = SCRIPT_ROOT / "model_registry.json"
@@ -1589,6 +1591,12 @@ def command_for(action: str, values: dict[str, Any]) -> list[Any]:
         return build_test_cmd(values)
     if action == "label":
         return build_label_cmd(values)
+    if action == "annotation_personal":
+        return [sys.executable, str(ANNOTATION_SERVICE_SCRIPT), "start", "--no-browser"]
+    if action == "annotation_share":
+        return [sys.executable, str(ANNOTATION_SERVICE_SCRIPT), "start", "--share", "--no-browser"]
+    if action == "annotation_stop":
+        return [sys.executable, str(ANNOTATION_SERVICE_SCRIPT), "stop"]
     if action == "train_ssh":
 
         return ["ssh", "-p", values["remote_train_port"], f"{values['remote_train_user']}@{values['remote_train_host']}", "hostname"]
@@ -1700,6 +1708,9 @@ def validate(action: str, values: dict[str, Any]) -> None:
             raise ValueError("请先从视频队列选择或填写视频路径。")
         if not values["label_name"].strip():
             raise ValueError("请先填写至少一个标签名称。")
+    elif action in {"annotation_personal", "annotation_share", "annotation_stop"}:
+        if not ANNOTATION_SERVICE_SCRIPT.is_file():
+            raise ValueError(f"未找到协作标注服务管理器：{ANNOTATION_SERVICE_SCRIPT}")
     elif action == "train_ssh":
         if not values["remote_train_user"].strip():
             raise ValueError("请先填写 Remote User。")
@@ -2644,9 +2655,10 @@ body{color:var(--text);background:radial-gradient(circle at 88% 0,#ffe4e4 0,tran
         <button data-tab="dataset">准备数据 <span>02</span></button>
         <button data-tab="assets">模型资产 <span>03</span></button>
         <button data-tab="test">测试模型 <span>04</span></button>
-        <button data-tab="label">辅助标注 <span>05</span></button>
-        <button data-tab="convert">部署与导出 <span>06</span></button>
-        <button data-tab="logs">运行记录 <span>07</span></button>
+        <button data-tab="collab">协作标注 <span>05</span></button>
+        <button data-tab="label">快速标注 <span>06</span></button>
+        <button data-tab="convert">部署与导出 <span>07</span></button>
+        <button data-tab="logs">运行记录 <span>08</span></button>
 
       </div>
       <div class="status">
@@ -2846,8 +2858,35 @@ body{color:var(--text);background:radial-gradient(circle at 88% 0,#ffe4e4 0,tran
         <div class="cmd" id="cmd-test"></div>
       </section>
 
+      <section id="tab-collab" class="tab card section">
+        <h2>本地优先的协作标注中心</h2><p class="hint">每台电脑都能独立标注；需要合作时，任意成员都可以临时开启局域网共享。伙伴只用浏览器，不需要 Docker、Python 或额外客户端。</p>
+        <div class="asset-summary">
+          <div><span>服务状态</span><b id="annotation-service-state">未启动</b></div>
+          <div><span>当前模式</span><b id="annotation-service-mode">-</b></div>
+          <div><span>服务端口</span><b>9000</b></div>
+          <div><span>项目工作区</span><b id="annotation-workspace-state">本机</b></div>
+        </div>
+        <div class="onboarding" style="margin-top:18px">
+          <div class="onboarding-head"><div><b>个人模式</b><span>仅当前电脑可以访问。适合离线整理、个人框选和制作可移植项目包。</span></div><button class="btn primary" onclick="runAnnotationService('annotation_personal')">启动个人标注</button></div>
+        </div>
+        <div class="onboarding" style="margin-top:12px">
+          <div class="onboarding-head"><div><b>局域网共享模式</b><span>同一 Wi-Fi 或网线网络中的伙伴可使用浏览器登录、领取任务、提交和审核。</span></div><button class="btn green" onclick="runAnnotationService('annotation_share')">开启团队共享</button></div>
+        </div>
+        <div class="grid" style="margin-top:16px">
+          <div class="field full"><label>本机入口</label><div class="input-action"><input id="annotation-local-url" readonly value="http://127.0.0.1:9000/"><button class="btn blue" onclick="openAnnotationCenter()">打开标注中心</button></div></div>
+          <div class="field full"><label>伙伴访问地址</label><div id="annotation-lan-urls" class="cmd">共享模式启动后显示局域网地址</div></div>
+        </div>
+        <div class="quick-help">
+          <div><b>1. 每个人独立</b><span>使用个人模式建立自己的项目；数据保存在各自电脑的 annotation_workspace。</span></div>
+          <div><b>2. 任意电脑共享</b><span>谁开启共享，谁就是当前团队主机；其他成员访问页面即可协作。</span></div>
+          <div><b>3. 项目包交换</b><span>下载 .matproj.zip 后可导入另一台电脑；已有标注进入待审核，不覆盖原项目。</span></div>
+          <div><b>4. 进入训练</b><span>审核通过后导出 Ultralytics YOLO，也可下载 COCO、VOC 或 LabelMe。</span></div>
+        </div>
+        <div class="actions"><div class="btns"><button class="btn" onclick="loadAnnotationService(true)">刷新状态</button><button class="btn red" onclick="runAnnotationService('annotation_stop')">停止标注服务</button></div><a class="btn" href="docs/COLLABORATIVE_ANNOTATION.md" target="_blank">查看使用说明</a></div>
+      </section>
+
       <section id="tab-label" class="tab card section">
-        <h2>半自动标注（需人工复核）</h2><p class="hint">跟踪只负责把上一帧的框带到下一帧，不替代人工检查。位置、尺寸或匹配质量异常时会立即暂停，并且不会把缺少目标的帧静默保存。</p>
+        <h2>单机快速标注（需人工复核）</h2><p class="hint">适合临时采样和视频跟踪；正式多人项目请使用“协作标注”。跟踪只负责把上一帧的框带到下一帧，不替代人工检查。</p>
         <div class="grid">
           <div class="field full"><label>标注来源</label><div class="choice"><label><input name="label_source_type" type="radio" value="video"><span>视频</span></label><label><input name="label_source_type" type="radio" value="camera"><span>摄像头</span></label><label><input name="label_source_type" type="radio" value="images"><span>图片集</span></label></div></div>
         </div>
@@ -2958,6 +2997,7 @@ const fields=['dataset_root','train_task','train_images_dir','train_annotations_
 let values={};
 let deploymentProfiles=[];
 let modelAssetCatalog={summary:{},roots:[],datasets:[]};
+let annotationServiceStatus={running:false,shared:false,lan_urls:[]};
 let labelVideos=[];
 let labelVideoIndex=-1;
 let labelVisibleCount=150;
@@ -2981,6 +3021,10 @@ function renderModelAssets(){const catalog=modelAssetCatalog||{summary:{},datase
 async function loadModelAssets(showMessage=false){try{const r=await fetch('/api/model-assets');if(!r.ok) throw new Error(`HTTP ${r.status}`);modelAssetCatalog=await r.json();renderModelAssets();if(showMessage) toast(`已读取 ${modelAssetCatalog.summary?.run_count||0} 条训练记录`)}catch(e){toast(e.message)}}
 async function pickAssetRoot(){try{const j=await api('/api/pick-asset-root',{values:collect()});if(j.path){setInputValue('asset_scan_root',j.path);await saveValues()}else toast('未选择文件夹')}catch(e){toast(e.message)}}
 async function scanModelAssets(){try{const v=collect();const j=await api('/api/model-assets/scan',{root:v.asset_scan_root,values:v});apply(j.values||{});modelAssetCatalog=j.catalog||modelAssetCatalog;renderModelAssets();await saveValues();toast(`扫描完成：${modelAssetCatalog.summary?.run_count||0} 条训练记录`)}catch(e){toast(e.message)}}
+function renderAnnotationService(){const s=annotationServiceStatus||{};setText('annotation-service-state',s.running?'运行中':'未启动');setText('annotation-service-mode',s.running?(s.shared?'局域网共享':'个人模式'):'-');setText('annotation-workspace-state',s.running?'已连接':'本机');const local=document.getElementById('annotation-local-url');if(local)local.value=s.local_url||'http://127.0.0.1:9000/';const urls=document.getElementById('annotation-lan-urls');if(urls)urls.textContent=s.running&&s.shared&&(s.lan_urls||[]).length?(s.lan_urls||[]).join('\n'):s.running?'当前仅本机访问；切换到共享模式后伙伴才能连接。':'共享模式启动后显示局域网地址'}
+async function loadAnnotationService(showMessage=false){try{const response=await fetch('/api/annotation-service');if(!response.ok)throw new Error(`HTTP ${response.status}`);annotationServiceStatus=await response.json();renderAnnotationService();if(showMessage)toast(annotationServiceStatus.running?'标注服务运行正常':'标注服务尚未启动')}catch(error){toast(error.message)}}
+async function runAnnotationService(action){try{await api('/api/run',{action,values:collect()});toast(action==='annotation_stop'?'正在停止标注服务':action==='annotation_share'?'正在开启局域网共享':'正在启动个人标注');showTab('logs');setTimeout(()=>loadAnnotationService(),1800)}catch(error){toast(error.message)}}
+async function openAnnotationCenter(){await loadAnnotationService();if(!annotationServiceStatus.running){toast('请先启动个人标注或团队共享');return}window.open(annotationServiceStatus.local_url||'http://127.0.0.1:9000/','_blank','noopener')}
 function updateSplitRatio(){const el=document.getElementById('train_ratio_percent'); const text=document.getElementById('split_ratio_text'); if(!el||!text) return; let train=Math.round(Number(el.value||80)); if(!Number.isFinite(train)) train=80; train=Math.max(1,Math.min(100,train)); if(String(train)!==el.value) el.value=String(train); text.textContent=`训练 ${train}% / 验证 ${100-train}%`}
 function fmt(v,d=3){return v===null||v===undefined||v===''||Number.isNaN(Number(v))?'-':Number(v).toFixed(d).replace(/\.0+$/,'').replace(/(\.\d*?)0+$/,'$1')}
 function setText(id,value){const el=document.getElementById(id); if(el) el.textContent=value}
@@ -3086,9 +3130,9 @@ async function stopTrainExport(){try{const j=await api('/api/stop-train-export',
 async function loadLabelResults(){try{await saveValues(); const r=await fetch('/api/label-results'); const j=await r.json(); const box=document.getElementById('label-results'); box.innerHTML=''; const items=j.items||[]; if(!items.length){box.innerHTML='<div class="empty">当前图片目录和标注目录中还没有可显示的标注结果。</div>'; return} for(const it of items){const card=document.createElement('div'); card.className='sample'; const src='/api/label-preview?image='+encodeURIComponent(it.image)+'&xml='+encodeURIComponent(it.xml)+'&t='+Date.now(); card.innerHTML=`<img src="${src}" loading="lazy"><div class="meta"><b>${it.stem}</b><span>${(it.boxes||[]).length} 个框</span><button class="delete">删除标注</button></div>`; card.querySelector('.delete').onclick=async()=>{const imageMode=collect().label_source_type==='images'; const target=imageMode?'对应 XML 标注':'这张图片和对应 XML'; if(Date.now()>deleteConfirmUntil){if(!confirm(`确定删除${target}吗？\n确认后 5 分钟内删除标注不再重复询问。`)) return; deleteConfirmUntil=Date.now()+5*60*1000} await api('/api/delete-label-sample',{image:it.image,xml:it.xml}); card.remove(); toast(imageMode?'已删除 XML 标注':'已删除废图和 XML')}; box.appendChild(card)}}catch(e){toast(e.message)}}
 async function loadTrainPlots(){try{const r=await fetch('/api/train-plots'); const j=await r.json(); const box=document.getElementById('train-plots'); if(!box) return; const note=document.getElementById('train-plots-note'); const items=j.items||[]; if(note) note.textContent=items.length?`已发现 ${items.length} 张图片`:'训练开始后自动刷新'; if(!items.length){box.innerHTML='<div class="empty">训练进行中或尚未生成可视化图。</div>'; return} box.innerHTML=''; for(const item of items){const card=document.createElement('div'); card.className='sample'; card.innerHTML=`<img src="/api/train-plot?name=${encodeURIComponent(item.name)}&t=${Date.now()}" loading="lazy"><div class="meta"><b>${item.name}</b></div>`; box.appendChild(card)}}catch(e){}}
 function scheduleLabelResultsRefresh(){clearTimeout(labelResultsTimer); labelResultsTimer=setTimeout(()=>loadLabelResults(),350)}
-async function refreshState(){try{const r=await fetch('/api/state'); if(!r.ok) throw new Error(`HTTP ${r.status}`); const s=await r.json(); setConnectionState(true); apply(s.values||{}); updateTrainProgress(s.train_progress||{}); const log=document.getElementById('log'); log.textContent=(s.logs||[]).join(''); log.scrollTop=log.scrollHeight; const pill=document.getElementById('runPill'); pill.className='pill '+(s.running?'run':'idle'); pill.querySelector('span:last-child').textContent=s.running?'运行中':'空闲'; const jobNames={train:'模型训练',export:'多平台导出',convert:'MaixCAM 专用转换',test:'模型测试',label:'半自动标注',train_ssh:'训练 SSH 检查',vm_ssh:'转换 SSH 检查'}; document.getElementById('jobInfo').textContent=s.job?`${jobNames[s.job]||s.job} · 开始 ${s.started_at||'-'}${s.finished_at?' · 结束 '+s.finished_at:''}${s.exit_code!==null&&s.exit_code!==undefined?' · 退出码 '+s.exit_code:''}`:'暂无任务'; const errorBox=document.getElementById('lastError'); const failed=!s.running&&s.job&&s.exit_code!==null&&Number(s.exit_code)!==0; if(s.last_error||failed){errorBox.hidden=false; errorBox.textContent=s.last_error||`上次任务失败（退出码 ${s.exit_code}），请打开“运行日志”查看具体原因。`}else errorBox.hidden=true; const box=document.getElementById('markers'); box.innerHTML=''; for(const [k,v] of Object.entries(s.markers||{})){const div=document.createElement('div'); div.className='marker'; div.innerHTML=`<b>${k}</b><span>${v}</span>`; box.appendChild(div)}}catch(e){setConnectionState(false); const pill=document.getElementById('runPill'); if(pill){pill.className='pill idle';pill.querySelector('span:last-child').textContent='未连接'} const errorBox=document.getElementById('lastError'); if(errorBox){errorBox.hidden=false;errorBox.textContent='训练面板未运行。请双击 start_train_panel.cmd，然后刷新此页面。'}}}
+async function refreshState(){try{const r=await fetch('/api/state'); if(!r.ok) throw new Error(`HTTP ${r.status}`); const s=await r.json(); setConnectionState(true); apply(s.values||{}); updateTrainProgress(s.train_progress||{}); const log=document.getElementById('log'); log.textContent=(s.logs||[]).join(''); log.scrollTop=log.scrollHeight; const pill=document.getElementById('runPill'); pill.className='pill '+(s.running?'run':'idle'); pill.querySelector('span:last-child').textContent=s.running?'运行中':'空闲'; const jobNames={train:'模型训练',export:'多平台导出',convert:'MaixCAM 专用转换',test:'模型测试',label:'单机快速标注',annotation_personal:'启动个人标注中心',annotation_share:'开启局域网协作标注',annotation_stop:'停止协作标注中心',train_ssh:'训练 SSH 检查',vm_ssh:'转换 SSH 检查'}; document.getElementById('jobInfo').textContent=s.job?`${jobNames[s.job]||s.job} · 开始 ${s.started_at||'-'}${s.finished_at?' · 结束 '+s.finished_at:''}${s.exit_code!==null&&s.exit_code!==undefined?' · 退出码 '+s.exit_code:''}`:'暂无任务'; const errorBox=document.getElementById('lastError'); const failed=!s.running&&s.job&&s.exit_code!==null&&Number(s.exit_code)!==0; if(s.last_error||failed){errorBox.hidden=false; errorBox.textContent=s.last_error||`上次任务失败（退出码 ${s.exit_code}），请打开“运行日志”查看具体原因。`}else errorBox.hidden=true; const box=document.getElementById('markers'); box.innerHTML=''; for(const [k,v] of Object.entries(s.markers||{})){const div=document.createElement('div'); div.className='marker'; div.innerHTML=`<b>${k}</b><span>${v}</span>`; box.appendChild(div)}}catch(e){setConnectionState(false); const pill=document.getElementById('runPill'); if(pill){pill.className='pill idle';pill.querySelector('span:last-child').textContent='未连接'} const errorBox=document.getElementById('lastError'); if(errorBox){errorBox.hidden=false;errorBox.textContent='训练面板未运行。请双击 start_train_panel.cmd，然后刷新此页面。'}}}
 function copyLogs(){navigator.clipboard.writeText(document.getElementById('log').textContent);toast('日志已复制')}
-function showTab(name){const target=document.getElementById('tab-'+name); if(!target) name='train'; document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));document.getElementById('tab-'+name).classList.add('active');document.querySelectorAll('.nav button').forEach(x=>x.classList.toggle('active',x.dataset.tab===name)); localStorage.setItem('myAutoTrainTab',name); if(name==='label') loadLabelResults(); if(name==='assets') loadModelAssets()}
+function showTab(name){const target=document.getElementById('tab-'+name); if(!target) name='train'; document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));document.getElementById('tab-'+name).classList.add('active');document.querySelectorAll('.nav button').forEach(x=>x.classList.toggle('active',x.dataset.tab===name)); localStorage.setItem('myAutoTrainTab',name); if(name==='label') loadLabelResults(); if(name==='assets') loadModelAssets(); if(name==='collab') loadAnnotationService()}
 
 document.querySelectorAll('.nav button').forEach(b=>b.onclick=()=>showTab(b.dataset.tab));
 document.querySelectorAll('input,select').forEach(el=>{const handler=()=>{if(el.id==='label_prefix') rawLabelPrefix.manual=true; if((el.id==='train_images_dir'||el.id==='train_annotations_dir')&&String(values.prepared_dataset_yaml||'').trim()){setInputValue('prepared_dataset_yaml',''); updatePreparedDatasetUI()} if(el.name==='train_task') updateTrainTaskUI(); if(el.name==='label_source_type') updateLabelSourceUI(); collect(); updateCurrentVideo(); saveValues(); updateCommands(); if(['train_images_dir','base_model','img_width','img_height','image_resize_mode','batch','train_cache'].includes(el.id)||el.name==='train_device'||el.name==='train_task') scheduleResourceEstimate(); if(['label_images_dir','label_annotations_dir','label_annotations_dir_images','label_images_input_dir'].includes(el.id)) scheduleLabelResultsRefresh()}; el.addEventListener('input',handler); el.addEventListener('change',handler)});
@@ -3136,6 +3180,18 @@ class PanelHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(raw)
             return
+        if parsed.path == "/docs/COLLABORATIVE_ANNOTATION.md":
+            document = SCRIPT_ROOT / "docs" / "COLLABORATIVE_ANNOTATION.md"
+            if not document.is_file():
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            raw = document.read_bytes()
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/markdown; charset=utf-8")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+            return
         if parsed.path == "/api/state":
             with STATE_LOCK:
                 self.send_json({
@@ -3153,6 +3209,9 @@ class PanelHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/device-profiles":
             self.send_json({"items": public_device_profiles()})
+            return
+        if parsed.path == "/api/annotation-service":
+            self.send_json(annotation_service_status())
             return
         if parsed.path == "/api/model-assets":
             with STATE_LOCK:

@@ -1,6 +1,6 @@
 # MyAutoTrain
 
-MyAutoTrain 是一个面向 Windows、Ubuntu 和多种边缘部署平台的 YOLO 训练工具，把数据检查、半自动标注、模型训练、模型资产追踪、多平台导出和测试放在同一个网页中。训练端负责生成通用模型，部署端通过设备配置档适配树莓派、Rockchip/香橙派、地瓜机器人 RDK、MaixCAM、NVIDIA Jetson、Intel OpenVINO 等运行时。
+MyAutoTrain 是一个面向 Windows、Ubuntu 和多种边缘部署平台的 YOLO 训练工具，把本地协作标注、数据检查、模型训练、模型资产追踪、多平台导出和测试连接起来。每台电脑都能独立标注，也能临时成为局域网团队主机；训练端负责生成通用模型，部署端通过设备配置档适配树莓派、Rockchip/香橙派、地瓜机器人 RDK、MaixCAM、NVIDIA Jetson、Intel OpenVINO 等运行时。
 
 > 当前仍处于公开发布前的工程化阶段。设备配置档表示“已有导出路线”，不等于所有板卡均已完成真机验证；请查看[设备适配文档](docs/DEVICE_ADAPTERS.md)。
 
@@ -18,6 +18,9 @@ MyAutoTrain 是一个面向 Windows、Ubuntu 和多种边缘部署平台的 YOLO
 
 - `启动训练面板.cmd`：打开平台。
 - `关闭训练面板.cmd`：关闭平台，不会删除数据或模型。
+- `启动个人标注中心.cmd`：本机离线标注。
+- `开启局域网协作标注.cmd`：让伙伴通过浏览器协作。
+- `关闭协作标注中心.cmd`：停止标注服务，不删除数据。
 
 网页地址固定为：<http://127.0.0.1:8989/>
 
@@ -61,6 +64,7 @@ MyAutoTrain-日期时间.zip
 - [使用说明](docs/USAGE.md)：Windows/Ubuntu 安装、训练、测试、导出和排错。
 - [设备适配与模型导出](docs/DEVICE_ADAPTERS.md)：树莓派、Rockchip、RDK、MaixCAM、Jetson、OpenVINO。
 - [数据集与模型资产](docs/MODEL_ASSETS.md)：训练清单、历史输出扫描和测试/部署快捷操作。
+- [本地优先协作标注](docs/COLLABORATIVE_ANNOTATION.md)：个人/共享模式、账号任务、审核、项目包和数据集导出。
 - [半自动标注说明](docs/SEMI_AUTO_LABELING.md)：质量检查、复核流程和已知边界。
 - [优化路线图](docs/ROADMAP.md)：公开发布前、设备适配、数据与工程化计划。
 - [参与贡献](CONTRIBUTING.md) 与 [安全说明](SECURITY.md)：设备验证要求、代码来源和本地服务边界。
@@ -71,6 +75,8 @@ MyAutoTrain-日期时间.zip
 ## 推荐操作流程
 
 ### 1. 准备数据
+
+不再强制依赖 Roboflow。进入“协作标注”可在本机创建项目，也可开启局域网共享，让成员领取任务、框选并提交审核；审核通过后直接导出 Ultralytics YOLO、COCO、VOC 或 LabelMe。详见[协作标注文档](docs/COLLABORATIVE_ANNOTATION.md)。
 
 推荐直接使用 Roboflow/YOLO 导出的标准目录：
 
@@ -185,7 +191,15 @@ dataset/
 ubuntu_install_and_start.sh Ubuntu 第一次部署
 ubuntu_start_train_panel.sh Ubuntu 日常启动
 ubuntu_stop_train_panel.sh  Ubuntu 日常停止
+启动个人标注中心.cmd      Windows 本机离线标注
+开启局域网协作标注.cmd    Windows 团队共享标注
+关闭协作标注中心.cmd      Windows 停止标注服务
+ubuntu_start_annotation.sh Ubuntu 个人/共享标注
+ubuntu_stop_annotation.sh  Ubuntu 停止标注服务
 train_panel.py           网页与本地服务
+annotation_server.py     原生协作标注服务端
+annotation_store.py      账号、项目、任务、锁和审核数据库
+annotation_exports.py    项目包与多格式数据集导出
 host_train_export.py     数据准备、训练与导出
 model_test.py            模型测试
 video_track_label.py     辅助标注

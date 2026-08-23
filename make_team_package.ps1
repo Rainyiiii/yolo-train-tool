@@ -23,10 +23,21 @@ if (Test-Path -LiteralPath $temporaryRoot) {
 New-Item -ItemType Directory -Path $temporaryRoot | Out-Null
 
 $allowedExtensions = @(".py", ".ps1", ".cmd", ".bat", ".sh", ".json", ".md", ".txt")
+$trackedTopLevel = $null
+if (Test-Path -LiteralPath (Join-Path $ScriptRoot ".git")) {
+    $gitCommand = Get-Command git.exe -ErrorAction SilentlyContinue
+    if ($gitCommand) {
+        $trackedTopLevel = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+        & $gitCommand.Source -c core.quotepath=false -C $ScriptRoot ls-files | Where-Object { $_ -notmatch "[/\\]" } | ForEach-Object {
+            [void]$trackedTopLevel.Add($_)
+        }
+    }
+}
 Get-ChildItem -LiteralPath $ScriptRoot -File | Where-Object {
     $_.Extension -in $allowedExtensions -and
-    $_.Name -notin @("train_panel_defaults.json", "model_registry.json") -and
-    $_.Name -notmatch "^\.train"
+    $_.Name -notin @("train_panel_defaults.json", "model_registry.json", ".annotation_server.pid.json") -and
+    $_.Name -notmatch "^\.train" -and
+    ($null -eq $trackedTopLevel -or $trackedTopLevel.Contains($_.Name))
 } | ForEach-Object {
     Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $temporaryRoot $_.Name)
 }

@@ -9,6 +9,8 @@ __pycache__/
 train_panel_defaults.json
 model_registry.json
 .train_panel.pid.json
+.annotation_server.pid.json
+annotation_workspace/
 config/
 cache/
 jobs/

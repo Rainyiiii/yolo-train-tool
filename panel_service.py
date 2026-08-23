@@ -20,7 +20,7 @@ PID_FILE = ROOT / ".train_panel.pid.json"
 LOG_DIR = ROOT / "logs"
 LOG_FILE = LOG_DIR / "panel.log"
 PANEL_URL = "http://127.0.0.1:8989/"
-PANEL_MARKER = "MyAutoTrain 团队训练平台"
+PANEL_MARKER = "MyAutoTrain 多平台模型训练工具"
 
 
 def read_pid_record() -> dict[str, object] | None:
