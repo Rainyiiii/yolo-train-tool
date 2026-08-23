@@ -47,11 +47,17 @@ jobs:
           $tag = $env:GITHUB_REF_NAME
           $installer = Get-ChildItem -LiteralPath dist -Filter "YOLO-Team-Training-Platform-Setup-*.exe" | Select-Object -First 1
           if (!$installer) { throw "Installer not found." }
-          $releaseArgs = @(
-            "release", "create", $tag, $installer.FullName,
-            "--title", "YOLO团队训练平台 $tag",
-            "--generate-notes"
-          )
-          if ($tag.Contains("-")) { $releaseArgs += "--prerelease" }
-          & gh @releaseArgs
+          & gh release view $tag *> $null
+          $releaseExists = $LASTEXITCODE -eq 0
+          if ($releaseExists) {
+            & gh release upload $tag $installer.FullName --clobber
+          } else {
+            $releaseArgs = @(
+              "release", "create", $tag, $installer.FullName,
+              "--title", "YOLO团队训练平台 $tag",
+              "--generate-notes"
+            )
+            if ($tag.Contains("-")) { $releaseArgs += "--prerelease" }
+            & gh @releaseArgs
+          }
           if ($LASTEXITCODE -ne 0) { throw "GitHub Release publishing failed." }
