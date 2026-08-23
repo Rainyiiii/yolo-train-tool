@@ -35,6 +35,6 @@ yolo-train-tool/
 1. 更新 `VERSION.txt`、`CHANGELOG.md` 和用户文档。
 2. 在 Windows 上通过测试并本地构建一次 Setup。
 3. 推送源码提交。
-4. 创建与版本一致的标签，例如 `v3.0.2-beta`。
+4. 创建与版本一致的标签，例如 `v3.2.0-beta`。
 5. 等待 GitHub Actions 成功，核对 Release 中的安装器。
-6. 正式公开前补全第三方来源与许可证，并为 Windows 二进制配置代码签名。
+6. 发布标签前复核 `LICENSE` 与第三方声明，并确认 Windows 代码签名 secrets 已配置。

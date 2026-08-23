@@ -14,6 +14,41 @@ $SafeVersion = $Version -replace "[^0-9A-Za-z.-]", "-"
 $versionNumbers = @([regex]::Matches($Version, "\d+") | ForEach-Object { $_.Value })
 while ($versionNumbers.Count -lt 3) { $versionNumbers += "0" }
 $NumericVersion = ($versionNumbers[0..2] -join ".") + ".0"
+$SigningPfx = [Environment]::GetEnvironmentVariable("YOLO_SIGN_PFX")
+$SigningPassword = [Environment]::GetEnvironmentVariable("YOLO_SIGN_PFX_PASSWORD")
+$TimestampUrl = [Environment]::GetEnvironmentVariable("YOLO_SIGN_TIMESTAMP_URL")
+if (!$TimestampUrl) { $TimestampUrl = "http://timestamp.digicert.com" }
+$RequireSigning = [Environment]::GetEnvironmentVariable("YOLO_REQUIRE_SIGNING") -eq "1"
+
+function Get-SignToolPath {
+    $kitsRoot = Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\bin"
+    $candidates = @()
+    if (Test-Path -LiteralPath $kitsRoot) {
+        $candidates = Get-ChildItem -LiteralPath $kitsRoot -Filter "signtool.exe" -File -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match "\\x64\\signtool\.exe$" } |
+            Sort-Object FullName -Descending
+    }
+    $tool = $candidates | Select-Object -First 1
+    if (!$tool) { throw "未找到 Windows SDK signtool.exe。" }
+    return $tool.FullName
+}
+
+function Invoke-CodeSigning([string]$FilePath) {
+    if (!$SigningPfx) {
+        if ($RequireSigning) { throw "当前发布要求代码签名，但未配置 YOLO_SIGN_PFX。" }
+        Write-Warning "未配置代码签名证书，生成的文件仅适合本地测试。"
+        return
+    }
+    if (!(Test-Path -LiteralPath $SigningPfx)) { throw "代码签名证书文件不存在：$SigningPfx" }
+    $signTool = Get-SignToolPath
+    $arguments = @("sign", "/fd", "SHA256", "/tr", $TimestampUrl, "/td", "SHA256", "/f", $SigningPfx)
+    if ($SigningPassword) { $arguments += @("/p", $SigningPassword) }
+    $arguments += $FilePath
+    & $signTool @arguments
+    if ($LASTEXITCODE -ne 0) { throw "代码签名失败：$FilePath" }
+    & $signTool verify /pa $FilePath
+    if ($LASTEXITCODE -ne 0) { throw "代码签名验证失败：$FilePath" }
+}
 
 if (!$StagingRoot.StartsWith([IO.Path]::GetFullPath($WorkspaceTemp), [StringComparison]::OrdinalIgnoreCase)) {
     throw "安装器暂存目录不在工作区 temp 内：$StagingRoot"
@@ -31,7 +66,8 @@ $runtimeFiles = @(
     "device_profiles.py", "export_model.py", "host_train_export.py", "install_runtime.ps1", "model_assets.py",
     "model_test.py", "panel_service.py", "platform_paths.py", "remote_train_env.py", "requirements.txt",
     "system_check.py", "train_panel.py", "train_panel_defaults.example.json", "ultralytics_train_runner.py",
-    "video_track_label.py", "vm_convert_pack.sh", "VERSION.txt", "README.md", "SECURITY.md", "THIRD_PARTY_NOTICES.md"
+    "video_track_label.py", "vm_convert_pack.sh", "project_manager.py", "VERSION.txt", "README.md", "SECURITY.md",
+    "THIRD_PARTY_NOTICES.md", "LICENSE"
 )
 foreach ($relative in $runtimeFiles) {
     $source = Join-Path $RepoRoot $relative
@@ -73,6 +109,9 @@ if (!(Test-Path -LiteralPath $dotnet)) { throw "未找到 .NET 8 SDK。" }
 if ($LASTEXITCODE -ne 0) { throw "WebView2 桌面程序依赖还原失败。" }
 & $dotnet publish $Project -c $Configuration --no-restore --self-contained false -o $DesktopStage
 if ($LASTEXITCODE -ne 0) { throw "WebView2 桌面程序发布失败。" }
+$desktopExecutable = Join-Path $DesktopStage "YOLOTeamTrainingPlatform.exe"
+if (!(Test-Path -LiteralPath $desktopExecutable)) { throw "桌面程序未生成：$desktopExecutable" }
+Invoke-CodeSigning $desktopExecutable
 
 $desktopRuntimeCache = Join-Path $DependencyCache "windowsdesktop-runtime-8-win-x64.exe"
 if (!(Test-Path -LiteralPath $desktopRuntimeCache) -or (Get-Item -LiteralPath $desktopRuntimeCache).Length -lt 40MB) {
@@ -101,4 +140,5 @@ if ($LASTEXITCODE -ne 0) { throw "Windows 安装程序编译失败。" }
 
 $setup = Join-Path $OutputDirectory "YOLO-Team-Training-Platform-Setup-v$SafeVersion.exe"
 if (!(Test-Path -LiteralPath $setup)) { throw "安装程序未生成：$setup" }
+Invoke-CodeSigning $setup
 Write-Host "WINDOWS_INSTALLER=$setup" -ForegroundColor Green

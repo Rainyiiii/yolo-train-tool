@@ -12,7 +12,7 @@ YOLO团队训练平台是一个面向 Windows、Ubuntu 和多种边缘部署平�
 
 ## 队友第一次使用
 
-1. 双击 `YOLO-Team-Training-Platform-Setup-v3.0.2-beta.exe`。
+1. 双击 `YOLO-Team-Training-Platform-Setup-v3.2.0-beta.exe`。
 2. 保持默认安装目录 `D:\YOLOTeamTrainingPlatform`，点击安装。
 3. 安装器自动准备 .NET、WebView2、Python、PyTorch、ONNX Runtime 和平台依赖。
 4. 安装完成后从桌面打开“YOLO团队训练平台”。
@@ -60,7 +60,7 @@ Ubuntu 上访问：<http://127.0.0.1:8989/>。如果要从其他电脑访问，�
 维护者运行 `installer/windows/build-installer.ps1`，程序会在 `dist` 文件夹生成：
 
 ```text
-YOLO-Team-Training-Platform-Setup-v3.0.2-beta.exe
+YOLO-Team-Training-Platform-Setup-v3.2.0-beta.exe
 ```
 
 安装器不会打包本机 Workspace、私人路径、训练数据、日志和训练结果。
@@ -88,13 +88,14 @@ WebView2 只是桌面承载层，不复制训练逻辑；桌面应用与浏览�
 - [使用说明](docs/USAGE.md)：Windows/Ubuntu 安装、训练、测试、导出和排错。
 - [设备适配与模型导出](docs/DEVICE_ADAPTERS.md)：树莓派、Rockchip、RDK、MaixCAM、Jetson、OpenVINO。
 - [数据集与模型资产](docs/MODEL_ASSETS.md)：规范训练清单和测试/部署快捷操作。
+- [项目中心](docs/PROJECT_CENTER.md)：项目、数据集检查、训练与模型关联。
 - [本地优先协作标注](docs/COLLABORATIVE_ANNOTATION.md)：个人/共享模式、账号任务、审核、项目包和数据集导出。
 - [半自动标注说明](docs/SEMI_AUTO_LABELING.md)：质量检查、复核流程和已知边界。
 - [优化路线图](docs/ROADMAP.md)：公开发布前、设备适配、数据与工程化计划。
 - [参与贡献](CONTRIBUTING.md) 与 [安全说明](SECURITY.md)：设备验证要求、代码来源和本地服务边界。
 - `.gitignore` 已排除虚拟环境、日志、个人配置、训练输出和部署压缩包。
 
-本项目包含从已有工程改写的代码。公开发布前必须先补全 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)，确认原始来源和许可证，再选择兼容的 `LICENSE`；来源未核实前不要宣称全部原创。还需确认仓库不包含个人数据、训练图片、私有路径、日志或模型权重。
+历史工程的准确来源与授权目前无法确认，因此仓库不提供猜测性来源链接，也不宣称未知部分为原创。当前采用保留权利的 [LICENSE](LICENSE)，详细边界与第三方组件见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。发布前仍需确认仓库不包含个人数据、训练图片、私有路径、日志或模型权重。
 
 ## 推荐操作流程
 

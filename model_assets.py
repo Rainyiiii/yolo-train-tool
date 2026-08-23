@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import datetime as dt
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -30,6 +31,7 @@ def load_registry(registry_path: Path) -> dict[str, Any]:
         "schema_version": REGISTRY_SCHEMA_VERSION,
         "roots": [str(item) for item in data.get("roots", []) if str(item).strip()],
         "manifests": [str(item) for item in data.get("manifests", []) if str(item).strip()],
+        "external_models": [item for item in data.get("external_models", []) if isinstance(item, dict) and item.get("path")],
     }
 
 
@@ -39,6 +41,7 @@ def save_registry(registry_path: Path, registry: dict[str, Any]) -> None:
         "schema_version": REGISTRY_SCHEMA_VERSION,
         "roots": sorted(dict.fromkeys(registry.get("roots", [])), key=str.casefold),
         "manifests": sorted(dict.fromkeys(registry.get("manifests", [])), key=str.casefold),
+        "external_models": registry.get("external_models", []),
     }
     temporary = registry_path.with_suffix(registry_path.suffix + ".tmp")
     temporary.write_text(json.dumps(normalized, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -66,6 +69,41 @@ def register_asset_manifest(registry_path: Path, manifest: str | Path) -> str:
             registry["roots"].append(root)
     save_registry(registry_path, registry)
     return resolved
+
+
+def register_external_model(
+    registry_path: Path,
+    model_path: str | Path,
+    dataset_name: str = "未关联数据集",
+    dataset_root: str | Path | None = None,
+    task: str = "unknown",
+    project_id: str = "",
+    labels: list[str] | None = None,
+    notes: str = "",
+) -> dict[str, Any]:
+    path = Path(model_path).expanduser().resolve()
+    if not path.is_file() or path.suffix.lower() not in {".pt", ".onnx"}:
+        raise ValueError("请选择存在的 .pt 或 .onnx 模型文件。")
+    registry = load_registry(registry_path)
+    record = {
+        "path": str(path),
+        "name": path.stem,
+        "dataset_name": str(dataset_name or "未关联数据集").strip(),
+        "dataset_root": _resolved_text(dataset_root) if str(dataset_root or "").strip() else str(path.parent),
+        "task": task if task in {"detect", "classify"} else "unknown",
+        "project_id": str(project_id or ""),
+        "labels": list(dict.fromkeys(str(item).strip() for item in (labels or []) if str(item).strip())),
+        "notes": str(notes or "")[:2000],
+        "created_at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
+    }
+    existing = next((item for item in registry["external_models"] if str(item.get("path", "")).casefold() == str(path).casefold()), None)
+    if existing is None:
+        registry["external_models"].append(record)
+    else:
+        existing.update(record)
+        record = existing
+    save_registry(registry_path, registry)
+    return record
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -213,6 +251,33 @@ def collect_model_assets(
                 deployments.append(deployment)
 
     runs = list(training_by_dir.values())
+    for index, record in enumerate(registry["external_models"], start=1):
+        model_path = Path(str(record.get("path") or "")).expanduser().resolve()
+        dataset_name = str(record.get("dataset_name") or "未关联数据集")
+        dataset_root = str(record.get("dataset_root") or model_path.parent)
+        runs.append({
+            "run_id": f"external-{index}",
+            "created_at": str(record.get("created_at") or ""),
+            "status": "registered" if model_path.is_file() else "missing",
+            "association": "manual",
+            "manifest": "",
+            "output_dir": str(model_path.parent),
+            "model_name": str(record.get("name") or model_path.stem),
+            "task": str(record.get("task") or "unknown"),
+            "classes": [str(item) for item in record.get("labels", [])],
+            "dataset": {
+                "id": str(record.get("project_id") or dataset_name),
+                "name": dataset_name,
+                "root": dataset_root,
+                "source": "手动登记",
+                "image_count": 0,
+                "version": "",
+            },
+            "training": {"notes": str(record.get("notes") or "")},
+            "metrics": {},
+            "artifacts": [item for item in [_artifact(model_path.suffix.lower().lstrip("."), model_path)] if item is not None],
+            "deployments": [],
+        })
     for run in runs:
         model_paths = {item["path"].casefold() for item in run["artifacts"] if item["kind"] in {"pt", "onnx"}}
         run["deployments"] = [item for item in deployments if item["source_model"].casefold() in model_paths]

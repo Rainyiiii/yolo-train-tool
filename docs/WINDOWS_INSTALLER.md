@@ -5,7 +5,7 @@
 队友只需要运行：
 
 ```text
-YOLO-Team-Training-Platform-Setup-v3.0.2-beta.exe
+YOLO-Team-Training-Platform-Setup-v3.2.0-beta.exe
 ```
 
 安装器默认选择 `D:\YOLOTeamTrainingPlatform`，并自动完成：
@@ -45,4 +45,12 @@ WebView2 桌面程序只加载本机 `127.0.0.1:8989` 平台页面；外部文�
 
 推送 `v*` 版本标签后，GitHub Actions 会执行同一个构建脚本，将 Setup 保存为工作流产物并自动创建 GitHub Release。应用源码、Python 核心源码和安装器源码始终保留在同一仓库、同一提交中。
 
-公开发布前必须为 Setup 和桌面 EXE 配置可信代码签名证书。未签名安装器可能触发 Windows SmartScreen；当前仓库不会伪造或绕过该提示。
+### Windows 代码签名
+
+构建脚本会同时签名 WebView2 桌面 EXE 和最终 Setup，并使用 RFC 3161 时间戳。GitHub 仓库需要配置：
+
+- Actions secret `WINDOWS_SIGNING_CERT_BASE64`：可信代码签名 PFX 文件的 Base64 内容；
+- Actions secret `WINDOWS_SIGNING_CERT_PASSWORD`：PFX 密码；
+- 可选 Actions variable `WINDOWS_SIGNING_TIMESTAMP_URL`：时间戳服务，留空时使用 DigiCert 时间戳地址。
+
+推送版本标签时签名是强制条件，缺少证书会终止发布；手动运行 workflow 可生成仅供本地测试的未签名安装器。证书私钥不得提交到仓库。构建脚本会用 `signtool verify /pa` 验证两个签名，工作流最后删除临时 PFX 文件。

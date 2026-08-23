@@ -32,8 +32,9 @@ import cv2
 import yaml
 
 from device_profiles import public_device_profiles
-from model_assets import collect_model_assets, register_asset_manifest, register_asset_root
+from model_assets import collect_model_assets, register_asset_manifest, register_asset_root, register_external_model
 from annotation_service import status_payload as annotation_service_status
+from project_manager import activate_project, create_project, inspect_dataset, project_catalog, update_project
 from platform_paths import (
     ANNOTATION_HUB_DIR,
     CONFIG_DIR,
@@ -89,6 +90,7 @@ TRAIN_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
 
 DEFAULT_VALUES: dict[str, Any] = {
+    "active_project_id": "",
     "dataset_root": str(DATASETS_DIR),
     "train_task": "detect",
     "train_images_dir": str(DATASETS_DIR / "default" / "images"),
@@ -2487,6 +2489,54 @@ def pick_directory(initial_dir: str = "", title: str = "选择文件夹") -> str
     return selected
 
 
+def apply_project_to_values(project: dict[str, Any], current: dict[str, str]) -> dict[str, str]:
+    """Make the selected project the source of truth for training-related fields."""
+    values = clean_values(current)
+    dataset_root = Path(project.get("dataset_root") or project.get("root") or "").expanduser().resolve()
+    task = str(project.get("task") or "detect")
+    values.update({
+        "active_project_id": str(project.get("id") or ""),
+        "project_name": str(project.get("id") or project.get("name") or "project"),
+        "dataset_root": str(dataset_root),
+        "raw_dataset_root": str(dataset_root),
+        "train_task": task,
+        "raw_class_names": ", ".join(project.get("labels") or []),
+    })
+    if task == "classify":
+        image_root = dataset_root / "images"
+        values.update({
+            "train_images_dir": str(image_root if image_root.is_dir() else dataset_root),
+            "train_annotations_dir": "",
+            "prepared_dataset_yaml": "",
+        })
+        return values
+
+    yaml_candidates = [dataset_root / "data.yaml", dataset_root / "dataset.yaml"]
+    yaml_path = next((candidate for candidate in yaml_candidates if candidate.is_file()), None)
+    if yaml_path is not None:
+        try:
+            prepared = inspect_prepared_yolo_dataset(str(dataset_root))
+            train_split = prepared["splits"]["train"]
+            values.update({
+                "train_images_dir": train_split["images_dir"],
+                "train_annotations_dir": "",
+                "prepared_dataset_yaml": prepared["yaml_path"],
+                "raw_class_names": ", ".join(prepared.get("class_names") or project.get("labels") or []),
+            })
+            return values
+        except Exception:
+            pass
+
+    images_dir = dataset_root / "images"
+    annotations_dir = dataset_root / "annotations"
+    values.update({
+        "train_images_dir": str(images_dir if images_dir.is_dir() else dataset_root),
+        "train_annotations_dir": str(annotations_dir) if annotations_dir.is_dir() else "",
+        "prepared_dataset_yaml": "",
+    })
+    return values
+
+
 def read_video_preview_frame(video_path: Path):
     backends = [cv2.CAP_ANY]
     if hasattr(cv2, "CAP_FFMPEG"):
@@ -2642,6 +2692,7 @@ HTML_PAGE = r'''<!doctype html>
 :root{--bg:#fff8f8;--panel:#ffffff;--panel2:#fff2f2;--text:#302525;--muted:#806e6e;--line:#eedddd;--blue:#e53935;--green:#27a66b;--purple:#ef6b68;--orange:#e88935;--red:#dc2f2f;--shadow:0 16px 42px rgba(126,43,43,.10)}
 body{color:var(--text);background:radial-gradient(circle at 88% 0,#ffe4e4 0,transparent 30%),linear-gradient(180deg,#fffafa,#fff4f4);font-size:14px}.wrap{width:min(1240px,calc(100% - 32px));padding:22px 0 32px}.hero{grid-template-columns:1fr;margin-bottom:16px}.card{background:var(--panel);border-color:var(--line);box-shadow:var(--shadow);border-radius:20px;backdrop-filter:none}.title{padding:24px 26px}.guide{padding:14px}.steps{grid-template-columns:repeat(3,1fr)}.step{padding:12px;background:#fffafa;border-color:var(--line);border-radius:14px}.num{border-radius:10px;color:#fff;background:linear-gradient(135deg,#e53935,#f06a66)}h1{font-size:36px;margin:14px 0 8px;color:#291f1f}.subtitle,.hint,.mini,.step span{color:var(--muted)}.eyebrow{color:#b32424;background:#fff0f0;border-color:#f3cccc}.eyebrow .dot{background:#e53935;box-shadow:0 0 0 4px #ffe2e2}.layout{grid-template-columns:220px 1fr;gap:16px}.side{padding:12px}.nav{gap:6px}.nav button{padding:13px 14px;border-radius:13px}.nav button:hover{background:#fff5f5;color:#5d4141}.nav button.active{color:#b82121;background:#fff0f0;border-color:#f0cccc}.nav button span{font-size:11px;color:#bca4a4}.status{background:#fffafa;border-color:var(--line);border-radius:14px}.pill.idle{color:#825f5f;background:#fff}.pill.run{color:#137a4c;background:#effaf4;border-color:#bce7cf}.pill.run .dot{background:#27a66b}.section{padding:22px}.section h2{color:#2d2222}.onboarding{background:linear-gradient(135deg,#fff0f0,#fffafa);border-color:#f0cccc;border-radius:16px}.preset{color:#674b4b;background:#fff;border-color:#e9d4d4}.preset:hover{color:#b82121;border-color:#e9a9a9;background:#fff3f3}.advanced-toggle{color:#b82121}label{color:#5f4848;font-weight:650}input,select{color:#352828;background:#fff;border-color:#e7d4d4;border-radius:12px}input:focus,select:focus{border-color:#e45757;box-shadow:0 0 0 4px rgba(229,57,53,.10)}.choice span{color:#745e5e;background:#fff;border-color:#e8d7d7;border-radius:12px}.choice input:checked+span{color:#b82121;border-color:#e79a9a;background:#fff0f0}.btn{color:#5a4242;background:#fff;border-color:#e6d0d0;border-radius:12px}.btn:hover{background:#fff5f5}.btn.primary,.btn.green,.btn.blue{color:#fff;background:linear-gradient(135deg,#d92f2f,#ed625e);border:0}.btn.red{color:#bd2525;background:#fff;border-color:#e7a6a6}.progress-card,.panel{background:#fffafa;border-color:#eedddd;border-radius:16px}.metrics-grid div,.quick-help div{background:#fff;border-color:#eadada}.metrics-grid b,.quick-help b,.marker b,.video-item b{color:#3a2b2b}.bar{background:#f3e7e7;border-color:#ead4d4}.bar div{background:linear-gradient(90deg,#e53935,#f27a74)}.readiness .check-item{background:#fff;border-color:#eadada}.check-item.ok .check-icon{background:#eaf8f0;color:#168354}.check-item.warn .check-icon{background:#fff3e6;color:#b76a1e}.check-item.error .check-icon{background:#fff0f0;color:#c82d2d}.last-error{color:#b62929;background:#fff1f1;border-color:#efc5c5}.marker,.sample,.video-item,.label-object{background:#fff;border-color:#eadada}.sample .delete{color:#b62929;background:#fff1f1;border-color:#efc5c5}.empty{border-color:#e4cfcf}.cmd,.log{color:#5d3c3c;background:#fffafa;border-color:#e7d3d3}.toast{color:#fff;background:#b82d2d;border-color:#a52424}.current-video,.label-status span{color:#9f2727;background:#fff0f0;border-color:#efcaca}.video-preview-box{color:var(--muted);background:#fffafa;border-color:#e8d5d5}.play-button{background:#e53935;box-shadow:0 12px 28px rgba(152,32,32,.25)}.progress-head b,.panel h3{color:#392a2a}.label-stage{border-color:#e4d0d0}.field.full>.onboarding{margin-bottom:0}@media(max-width:980px){.steps{grid-template-columns:1fr}.layout{grid-template-columns:1fr}.side{position:static}.nav{grid-template-columns:repeat(3,1fr)}.nav button{justify-content:center;gap:7px}.status{margin-top:10px}}@media(max-width:620px){.nav{grid-template-columns:1fr 1fr}.wrap{width:min(100% - 20px,1240px)}h1{font-size:29px}.metrics-grid{grid-template-columns:repeat(2,1fr)}}
 .asset-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.asset-summary div{padding:15px;border:1px solid var(--line);border-radius:15px;background:#fffafa}.asset-summary span{display:block;color:var(--muted);font-size:12px}.asset-summary b{display:block;margin-top:4px;font-size:25px}.asset-library{display:grid;gap:16px;margin-top:18px}.asset-dataset{border:1px solid var(--line);border-radius:18px;background:#fffafa;padding:17px}.asset-dataset-head{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;flex-wrap:wrap}.asset-dataset-head h3{margin:0 0 5px;font-size:19px}.asset-path{color:var(--muted);font-size:12px;overflow-wrap:anywhere}.asset-badges{display:flex;gap:7px;flex-wrap:wrap}.asset-badge{display:inline-flex;padding:5px 8px;border-radius:999px;background:#fff;border:1px solid var(--line);font-size:11px;color:#765f5f}.asset-badge.ok{color:#167a4d;background:#eef9f3;border-color:#c4e8d3}.asset-badge.warn{color:#a85c18;background:#fff6e9;border-color:#f2d7b6}.asset-run-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:12px;margin-top:14px}.asset-run{border:1px solid var(--line);border-radius:15px;background:#fff;padding:14px;min-width:0}.asset-run h4{margin:0;font-size:16px}.asset-run-meta{display:grid;gap:5px;margin:10px 0;color:var(--muted);font-size:12px}.artifact-row{display:grid;gap:7px;padding:9px 0;border-top:1px solid #f0e2e2}.artifact-name{display:flex;justify-content:space-between;gap:8px;font-size:12px}.artifact-name b{overflow-wrap:anywhere}.asset-actions{display:flex;gap:7px;flex-wrap:wrap}.asset-actions .btn{padding:7px 10px;font-size:11px}.asset-deployments{margin-top:8px;padding-top:8px;border-top:1px dashed var(--line);font-size:12px;color:var(--muted)}@media(max-width:760px){.asset-summary{grid-template-columns:repeat(2,1fr)}.asset-run-grid{grid-template-columns:1fr}}
+.hero{display:block}.hero .title{display:flex;align-items:center;gap:22px;padding:18px 24px}.hero h1{font-size:30px;margin:0;white-space:nowrap}.hero .subtitle{line-height:1.55}.guide{display:none}.project-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:16px 0}.project-summary div{padding:14px;border:1px solid var(--line);border-radius:14px;background:#fffafa}.project-summary span{display:block;color:var(--muted);font-size:12px}.project-summary b{display:block;font-size:24px;margin-top:4px}.project-list{display:grid;gap:14px;margin-top:18px}.project-card{border:1px solid var(--line);border-radius:17px;padding:16px;background:#fffafa}.project-card.active{border-color:#e88d8d;box-shadow:0 0 0 3px #fff0f0}.project-head{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;flex-wrap:wrap}.project-head h3{margin:0 0 5px}.project-health{display:flex;gap:7px;flex-wrap:wrap;margin:12px 0}.health{padding:5px 9px;border-radius:999px;border:1px solid var(--line);font-size:11px}.health.ok{color:#167a4d;background:#eef9f3;border-color:#c4e8d3}.health.warning{color:#a85c18;background:#fff6e9;border-color:#f2d7b6}.health.error{color:#bd2525;background:#fff0f0;border-color:#efc5c5}.project-issues{display:grid;gap:5px;color:#9b4c36;font-size:12px;margin:10px 0}.project-preview{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:9px}.project-preview figure{margin:0;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:#fff}.project-preview img{width:100%;aspect-ratio:4/3;object-fit:cover;display:block}.project-preview figcaption{padding:7px;font-size:10px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.project-preview figure.missing{border-color:#e7a6a6}.project-create{padding:16px;border-radius:16px;background:#fffafa;border:1px solid var(--line)}button:focus-visible,input:focus-visible,select:focus-visible,a:focus-visible{outline:3px solid rgba(229,57,53,.28);outline-offset:2px}@media(max-width:980px){.hero .title{display:block}.hero h1{margin:10px 0}.project-summary{grid-template-columns:1fr 1fr 1fr}}@media(max-width:620px){.project-summary{grid-template-columns:1fr}.hero .title{padding:16px}.hero h1{font-size:25px}.section{padding:16px}}
 </style>
 </head>
 <body>
@@ -2665,14 +2716,15 @@ body{color:var(--text);background:radial-gradient(circle at 88% 0,#ffe4e4 0,tran
   <div class="layout">
     <aside class="card side">
       <div class="nav">
-        <button data-tab="train" class="active">开始训练 <span>01</span></button>
-        <button data-tab="dataset">准备数据 <span>02</span></button>
-        <button data-tab="assets">模型资产 <span>03</span></button>
-        <button data-tab="test">测试模型 <span>04</span></button>
-        <button data-tab="collab">协作标注 <span>05</span></button>
-        <button data-tab="label">快速标注 <span>06</span></button>
-        <button data-tab="convert">部署与导出 <span>07</span></button>
-        <button data-tab="logs">运行记录 <span>08</span></button>
+        <button data-tab="projects" class="active">项目中心 <span>01</span></button>
+        <button data-tab="train">开始训练 <span>02</span></button>
+        <button data-tab="dataset">准备数据 <span>03</span></button>
+        <button data-tab="assets">模型资产 <span>04</span></button>
+        <button data-tab="test">测试模型 <span>05</span></button>
+        <button data-tab="collab">协作标注 <span>06</span></button>
+        <button data-tab="label">快速标注 <span>07</span></button>
+        <button data-tab="convert">部署与导出 <span>08</span></button>
+        <button data-tab="logs">运行记录 <span>09</span></button>
 
       </div>
       <div class="status">
@@ -2684,7 +2736,24 @@ body{color:var(--text);background:radial-gradient(circle at 88% 0,#ffe4e4 0,tran
     </aside>
 
     <main class="main">
-      <section id="tab-train" class="tab active card section">
+      <section id="tab-projects" class="tab active card section">
+        <h2>项目中心</h2><p class="hint">每个项目统一关联数据集、类别、训练参数和模型资产。先激活项目，再进入训练、标注或导出页面。</p>
+        <div class="project-summary"><div><span>项目</span><b id="project-count">0</b></div><div><span>图片</span><b id="project-image-count">0</b></div><div><span>待处理问题</span><b id="project-issue-count">0</b></div></div>
+        <div class="project-create">
+          <h3 style="margin-top:0">新建项目</h3>
+          <div class="grid">
+            <div class="field"><label>项目名称</label><input id="new-project-name" placeholder="例如：产线零件缺陷检测"></div>
+            <div class="field"><label>任务类型</label><select id="new-project-task"><option value="detect">目标检测</option><option value="classify">图像分类</option></select></div>
+            <div class="field"><label>类别名称</label><input id="new-project-labels" placeholder="多个类别用逗号分隔，例如 defect, normal"></div>
+            <div class="field"><label>数据集目录（可选）</label><div class="input-action"><input id="new-project-root" placeholder="留空则自动创建规范目录"><button class="btn" onclick="pickProjectDatasetRoot()">选择文件夹</button></div></div>
+          </div>
+          <div class="actions"><span class="mini">默认位置由平台数据目录管理；也可以关联已有 YOLO/VOC/分类数据集。</span><button class="btn primary" onclick="createPlatformProject()">创建并激活</button></div>
+        </div>
+        <div class="actions"><span class="mini" id="project-active-note">尚未激活项目</span><button class="btn" onclick="loadProjects(true)">重新检查数据集</button></div>
+        <div id="project-list" class="project-list"><div class="empty">正在读取项目...</div></div>
+      </section>
+
+      <section id="tab-train" class="tab card section">
         <h2>开始训练</h2><p class="hint">可直接导入下载好的 YOLO 数据集，也可继续使用图片 + XML。其他参数已按 640×480 稳定训练配置准备好。</p>
         <div class="onboarding">
           <div class="onboarding-head"><div><b>选择训练方式</b><span>不确定时使用“640×480 推荐”；训练不会自动早停，由你手动结束。</span></div><button id="advanced-toggle" class="preset advanced-toggle" onclick="toggleAdvancedSettings()">更多设置</button></div>
@@ -2819,9 +2888,15 @@ body{color:var(--text);background:radial-gradient(circle at 88% 0,#ffe4e4 0,tran
         </div>
         <div class="grid" style="margin-top:18px">
           <div class="field full"><label>补充扫描目录</label><div class="input-action"><input id="asset_scan_root" placeholder="选择包含 training-manifest.json 的训练运行根目录"><button class="btn" onclick="pickAssetRoot()">选择文件夹</button><button class="btn blue" onclick="scanModelAssets()">扫描并记住</button></div><div class="mini">平台工作区会自动扫描；这里只用于补充外部训练运行目录。</div></div>
+          <div class="field full"><label>登记已有模型</label><div class="input-action"><input id="external-model-path" placeholder="选择已有 .pt 或 .onnx 文件"><button class="btn" onclick="pickExternalModel()">选择模型</button></div></div>
+          <div class="field"><label>关联数据集 / 项目名称</label><input id="external-dataset-name" placeholder="例如：零件缺陷数据集 v2"></div>
+          <div class="field sm"><label>任务</label><select id="external-model-task"><option value="detect">目标检测</option><option value="classify">图像分类</option><option value="unknown">未知</option></select></div>
+          <div class="field sm"><label>类别</label><input id="external-model-labels" placeholder="defect, normal"></div>
+          <div class="field full"><label>备注</label><div class="input-action"><input id="external-model-notes" placeholder="来源、训练设置或适用设备"><button class="btn primary" onclick="registerExternalModel()">登记到资产库</button></div></div>
           <div class="field full"><label>搜索</label><input id="asset-search" placeholder="按数据集、模型、类别、任务或路径筛选" oninput="renderModelAssets()"></div>
         </div>
-        <div class="actions"><span class="mini" id="asset-roots-note">尚未读取资产目录</span><button class="btn" onclick="loadModelAssets(true)">刷新资产</button></div>
+        <div class="actions"><span class="mini" id="asset-roots-note">尚未读取资产目录</span><div class="btns"><button class="btn" onclick="compareSelectedModels()">比较已选模型</button><button class="btn" onclick="loadModelAssets(true)">刷新资产</button></div></div>
+        <div id="model-compare" class="panel" style="margin-top:14px" hidden></div>
         <div id="model-assets" class="asset-library"><div class="empty">正在读取模型资产...</div></div>
       </section>
 
@@ -2906,13 +2981,13 @@ body{color:var(--text);background:radial-gradient(circle at 88% 0,#ffe4e4 0,tran
         </div>
         <div id="label-video-source" class="label-source">
           <div class="grid">
-            <div class="field full"><label>Video Folder</label><input id="label_video_dir" placeholder="例如 D:/videos 或 E:/datasets/raw_videos"></div>
+            <div class="field full"><label>视频文件夹</label><input id="label_video_dir" placeholder="例如 D:/videos 或 E:/datasets/raw_videos"></div>
           </div>
           <div class="actions"><div class="btns"><button class="btn" onclick="pickLabelVideoDir()">选择视频文件夹</button><button class="btn blue" onclick="loadLabelVideos()">读取文件夹视频</button></div><div class="btns"><button class="btn" onclick="selectPrevVideo()">上一个</button><button class="btn" onclick="selectNextVideo()">下一个</button></div></div>
           <div class="label-workspace">
             <div class="panel">
               <div class="queue-head"><h3>视频队列</h3><span class="count" id="label-video-count">0 个视频</span></div>
-              <div id="label-video-list" class="video-list"><div class="empty">填写 Video Folder 后点击“读取文件夹视频”。</div></div>
+              <div id="label-video-list" class="video-list"><div class="empty">填写视频文件夹后点击“读取文件夹视频”。</div></div>
               <div class="video-preview">
                 <div class="queue-head"><h3>视频预览</h3><span class="count" id="label-preview-name">未选择</span></div>
                 <div id="label-video-preview" class="video-preview-box"><span>选择左侧视频后显示首帧预览</span></div>
@@ -2922,11 +2997,11 @@ body{color:var(--text);background:radial-gradient(circle at 88% 0,#ffe4e4 0,tran
               <h3>当前视频与标注参数</h3>
               <div class="current-video"><span class="count">当前待标注视频</span><b id="label-current-video">未选择视频</b></div>
               <div class="label-config">
-                <div class="field full"><label>Video Path</label><input id="label_video" placeholder="从队列选择，或手动输入视频文件路径"></div>
-                <div class="field"><label>Labels</label><input id="label_name" placeholder="多个标签用英文逗号分隔，如 w,person,car"></div>
-                <div class="field"><label>Filename Prefix</label><input id="label_prefix"></div>
-                <div class="field"><label>Images Dir</label><input id="label_images_dir"></div>
-                <div class="field"><label>Annotations Dir</label><input id="label_annotations_dir"></div>
+                <div class="field full"><label>视频路径</label><input id="label_video" placeholder="从队列选择，或手动输入视频文件路径"></div>
+                <div class="field"><label>类别名称</label><input id="label_name" placeholder="多个标签用英文逗号分隔，如 w,person,car"></div>
+                <div class="field"><label>文件名前缀</label><input id="label_prefix"></div>
+                <div class="field"><label>图片输出目录</label><input id="label_images_dir"></div>
+                <div class="field"><label>标注输出目录</label><input id="label_annotations_dir"></div>
                 <div class="field"><label>跟踪策略</label><select id="label_tracker"><option value="csrt">稳健跟踪（推荐，较慢）</option><option value="kcf">快速跟踪（画面稳定）</option><option value="template">兼容模式（无需额外跟踪器）</option><option value="multi_template">多视角实验模式</option></select></div>
 
                 <div class="field sm"><label>Save Every N Frames</label><input id="label_interval"></div>
@@ -2944,10 +3019,10 @@ body{color:var(--text);background:radial-gradient(circle at 88% 0,#ffe4e4 0,tran
             <p class="hint">启动后在网页画面框选目标。跟踪过程中按保存间隔写入 JPEG 和同名 VOC XML；发现丢失或漂移时会暂停，修正后再继续。</p>
             <div class="label-config">
               <div class="field"><label>Camera Index</label><input id="label_camera_index" placeholder="0"></div>
-              <div class="field"><label>Labels</label><input id="label_name_camera" placeholder="多个标签用英文逗号分隔，如 w,person,car"></div>
-              <div class="field"><label>Filename Prefix</label><input id="label_prefix_camera" placeholder="camera"></div>
-              <div class="field"><label>Images Dir</label><input id="label_images_dir_camera"></div>
-              <div class="field"><label>Annotations Dir</label><input id="label_annotations_dir_camera"></div>
+              <div class="field"><label>类别名称</label><input id="label_name_camera" placeholder="多个标签用英文逗号分隔，如 w,person,car"></div>
+              <div class="field"><label>文件名前缀</label><input id="label_prefix_camera" placeholder="camera"></div>
+              <div class="field"><label>图片输出目录</label><input id="label_images_dir_camera"></div>
+              <div class="field"><label>标注输出目录</label><input id="label_annotations_dir_camera"></div>
               <div class="field"><label>跟踪策略</label><select id="label_tracker_camera"><option value="csrt">稳健跟踪（推荐，较慢）</option><option value="kcf">快速跟踪（画面稳定）</option><option value="template">兼容模式（无需额外跟踪器）</option><option value="multi_template">多视角实验模式</option></select></div>
               <div class="field sm"><label>Save Every N Frames</label><input id="label_interval_camera"></div>
               <div class="field sm"><label>Max Frames</label><input id="label_max_frames_camera" placeholder="0 为持续采集"></div>
@@ -2962,8 +3037,8 @@ body{color:var(--text);background:radial-gradient(circle at 88% 0,#ffe4e4 0,tran
             <p class="hint">选择已按时间顺序命名的帧图片文件夹。将按文件名排序跟踪，原图保留不动，仅在标注目录生成同名 XML。</p>
             <div class="label-config">
               <div class="field full"><label>图片集文件夹</label><div class="input-action"><input id="label_images_input_dir" placeholder="例如 E:/datasets/selected_frames（支持 jpg、png、bmp、webp）"><button class="btn" onclick="pickLabelImagesDir()">选择文件夹</button></div></div>
-              <div class="field"><label>Labels</label><input id="label_name_images" placeholder="多个标签用英文逗号分隔，如 w,person,car"></div>
-              <div class="field"><label>Annotations Dir</label><input id="label_annotations_dir_images"></div>
+              <div class="field"><label>类别名称</label><input id="label_name_images" placeholder="多个标签用英文逗号分隔，如 w,person,car"></div>
+              <div class="field"><label>标注输出目录</label><input id="label_annotations_dir_images"></div>
               <div class="field"><label>跟踪策略</label><select id="label_tracker_images"><option value="csrt">稳健跟踪（推荐，较慢）</option><option value="kcf">快速跟踪（画面稳定）</option><option value="template">兼容模式（无需额外跟踪器）</option><option value="multi_template">多视角实验模式</option></select></div>
               <div class="field sm"><label>每 N 张保存</label><input id="label_interval_images"></div>
               <div class="field sm"><label>起始图片序号</label><input id="label_start_frame_images"></div>
@@ -3009,8 +3084,10 @@ const fields=['dataset_root','train_task','train_images_dir','train_annotations_
 
 
 let values={};
+let projectCatalog={active_project_id:'',projects:[],summary:{}};
 let deploymentProfiles=[];
 let modelAssetCatalog={summary:{},roots:[],datasets:[]};
+const modelCompareSelection=new Set();
 let annotationServiceStatus={running:false,shared:false,lan_urls:[]};
 let labelVideos=[];
 let labelVideoIndex=-1;
@@ -3026,13 +3103,24 @@ let deleteConfirmUntil=0;
 const rawLabelPrefix={manual:false,value:''};
 function toast(msg){const el=document.getElementById('toast');el.textContent=msg;el.classList.add('show');setTimeout(()=>el.classList.remove('show'),2600)}
 function escapeHtml(value){return String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]))}
+function renderProjects(){const catalog=projectCatalog||{projects:[],summary:{}},summary=catalog.summary||{};setText('project-count',summary.project_count||0);setText('project-image-count',summary.image_count||0);setText('project-issue-count',summary.issue_count||0);const active=(catalog.projects||[]).find(item=>item.active);setText('project-active-note',active?`当前项目：${active.name}`:'尚未激活项目');const box=document.getElementById('project-list');if(!box)return;box.innerHTML='';if(!(catalog.projects||[]).length){box.innerHTML='<div class="empty">还没有项目。创建第一个项目后，数据、训练和模型会按项目归档。</div>';return}for(const project of catalog.projects){const dataset=project.dataset||{},card=document.createElement('article');card.className='project-card'+(project.active?' active':'');const labels=(project.labels||[]).map(label=>`<span class="asset-badge">${escapeHtml(label)}</span>`).join('');const issues=(dataset.issues||[]).map(issue=>`<span>• ${escapeHtml(issue)}</span>`).join('');const preview=(dataset.preview||[]).slice(0,12).map(item=>`<figure class="${item.has_label?'':'missing'}"><img loading="lazy" src="/api/project-image?project_id=${encodeURIComponent(project.id)}&path=${encodeURIComponent(item.relative_path)}" alt="${escapeHtml(item.name)}"><figcaption>${escapeHtml(item.name)}${item.has_label?'':' · 缺标注'}</figcaption></figure>`).join('');card.innerHTML=`<div class="project-head"><div><h3>${escapeHtml(project.name)}</h3><div class="asset-path">${escapeHtml(project.id)} · ${escapeHtml(project.dataset_root||project.root||'')}</div></div><div class="asset-badges"><span class="asset-badge ${project.active?'ok':''}">${project.active?'当前项目':'未激活'}</span><span class="asset-badge">${project.task==='classify'?'图像分类':'目标检测'}</span>${labels}</div></div><div class="project-health"><span class="health ${escapeHtml(dataset.health||'error')}">${dataset.health==='ok'?'数据就绪':dataset.health==='warning'?'需要检查':'暂无有效数据'}</span><span class="health">${dataset.image_count||0} 张图片</span><span class="health">${dataset.label_count||0} 个标注</span><span class="health">${dataset.box_count||0} 个框</span></div>${issues?`<div class="project-issues">${issues}</div>`:''}<div class="field full"><label>关联数据集目录</label><div class="input-action"><input class="project-root-input" value="${escapeHtml(project.dataset_root||project.root||'')}"><button class="btn choose-root">选择</button><button class="btn save-root">保存</button></div></div>${preview?`<div class="project-preview">${preview}</div>`:'<div class="empty">目录中还没有可预览图片。</div>'}<div class="actions"><span class="mini">更新于 ${escapeHtml(assetTime(project.updated_at))}</span><div class="btns"><button class="btn inspect-project">检查数据</button><button class="btn primary activate-project">${project.active?'进入训练':'激活项目'}</button></div></div>`;const rootInput=card.querySelector('.project-root-input');card.querySelector('.choose-root').onclick=async()=>{const selected=await chooseProjectRoot(rootInput.value);if(selected)rootInput.value=selected};card.querySelector('.save-root').onclick=()=>updatePlatformProject(project.id,{dataset_root:rootInput.value});card.querySelector('.inspect-project').onclick=()=>inspectPlatformProject(project.id);card.querySelector('.activate-project').onclick=()=>activatePlatformProject(project.id,true);box.appendChild(card)}}
+async function loadProjects(showMessage=false){try{const response=await fetch('/api/projects');if(!response.ok)throw new Error(`HTTP ${response.status}`);projectCatalog=await response.json();renderProjects();if(showMessage)toast('项目和数据集检查已刷新')}catch(error){toast(error.message)}}
+async function chooseProjectRoot(initial=''){const result=await api('/api/pick-project-dataset-root',{initial});return result.path||''}
+async function pickProjectDatasetRoot(){try{const input=document.getElementById('new-project-root');const selected=await chooseProjectRoot(input.value);if(selected)input.value=selected}catch(error){toast(error.message)}}
+async function createPlatformProject(){try{const result=await api('/api/projects/create',{name:document.getElementById('new-project-name').value,task:document.getElementById('new-project-task').value,labels:document.getElementById('new-project-labels').value,dataset_root:document.getElementById('new-project-root').value});projectCatalog=result.catalog;apply(result.values||{});renderProjects();await saveValues();document.getElementById('new-project-name').value='';document.getElementById('new-project-labels').value='';document.getElementById('new-project-root').value='';toast('项目已创建并激活')}catch(error){toast(error.message)}}
+async function activatePlatformProject(projectId,openTrain=false){try{const result=await api('/api/projects/activate',{project_id:projectId});projectCatalog=result.catalog;apply(result.values||{});renderProjects();await saveValues();toast(`已激活 ${result.project.name}`);if(openTrain)showTab('train')}catch(error){toast(error.message)}}
+async function updatePlatformProject(projectId,updates){try{const result=await api('/api/projects/update',{project_id:projectId,updates});projectCatalog=result.catalog;apply(result.values||{});renderProjects();await saveValues();toast('项目已更新')}catch(error){toast(error.message)}}
+async function inspectPlatformProject(projectId){try{const result=await api('/api/projects/inspect',{project_id:projectId});projectCatalog=result.catalog;renderProjects();toast((result.dataset.issues||[]).length?`发现 ${result.dataset.issues.length} 类数据问题`:'数据集检查通过')}catch(error){toast(error.message)}}
 function assetTime(value){return String(value||'-').replace('T',' ').replace(/([+-]\d\d:\d\d|Z)$/,'')}
 function metricValue(metrics,patterns,exclude=[]){for(const [key,value] of Object.entries(metrics||{})){const lower=key.toLowerCase(); if(patterns.some(x=>lower.includes(x))&&!exclude.some(x=>lower.includes(x))) return fmt(value,4)} return ''}
 function assetMetricText(metrics){const parts=[]; const map50=metricValue(metrics,['map50'],['map50-95','map50_95']); const map95=metricValue(metrics,['map50-95','map50_95']); const precision=metricValue(metrics,['precision']); const recall=metricValue(metrics,['recall']); const top1=metricValue(metrics,['top1','accuracy_top1']); if(map50) parts.push(`mAP50 ${map50}`); if(map95) parts.push(`mAP50-95 ${map95}`); if(precision) parts.push(`P ${precision}`); if(recall) parts.push(`R ${recall}`); if(top1) parts.push(`Top-1 ${top1}`); return parts.join(' · ')}
 function useModelAsset(path,action,classesPath=''){if(action==='test'){setInputValue('test_model',path); showTab('test'); toast('已填入模型测试页面')}else if(action==='deploy'){setInputValue('deploy_model',path); if(classesPath) setInputValue('classes_path',classesPath); showTab('convert'); toast('已填入部署与导出页面')} saveValues(); updateCommands()}
 async function copyAssetPath(path){try{await navigator.clipboard.writeText(path);toast('路径已复制')}catch(e){toast('无法复制路径')}}
-function renderModelAssets(){const catalog=modelAssetCatalog||{summary:{},datasets:[]},summary=catalog.summary||{}; setText('asset-dataset-count',summary.dataset_count||0);setText('asset-run-count',summary.run_count||0);setText('asset-model-count',summary.model_count||0);setText('asset-deployment-count',summary.deployment_count||0); const roots=document.getElementById('asset-roots-note'); if(roots) roots.textContent=(catalog.roots||[]).length?`已索引 ${(catalog.roots||[]).length} 个目录`:'尚未登记扫描目录'; const box=document.getElementById('model-assets'); if(!box) return; const query=String(document.getElementById('asset-search')?.value||'').trim().toLowerCase(); const datasets=(catalog.datasets||[]).filter(item=>!query||JSON.stringify(item).toLowerCase().includes(query)); box.innerHTML=''; if(!datasets.length){box.innerHTML=`<div class="empty">${query?'没有匹配的模型资产。':'尚未找到模型资产。完成一次新训练，或扫描包含 training-manifest.json 的训练运行目录。'}</div>`;return} for(const dataset of datasets){const section=document.createElement('section');section.className='asset-dataset'; const classes=(dataset.classes||[]).slice(0,12).map(name=>`<span class="asset-badge">${escapeHtml(name)}</span>`).join(''); section.innerHTML=`<div class="asset-dataset-head"><div><h3>${escapeHtml(dataset.name||'未命名数据集')}</h3><div class="asset-path">${escapeHtml(dataset.root||'')}</div>${dataset.source?`<div class="asset-path">来源：${escapeHtml(dataset.source)}</div>`:''}</div><div class="asset-badges"><span class="asset-badge ok">${(dataset.runs||[]).length} 次训练</span>${dataset.image_count?`<span class="asset-badge">${dataset.image_count} 张训练图片</span>`:''}${dataset.version?`<span class="asset-badge">版本 ${escapeHtml(dataset.version)}</span>`:''}${(dataset.tasks||[]).map(task=>`<span class="asset-badge">${escapeHtml(task==='detect'?'目标检测':task==='classify'?'图像分类':task)}</span>`).join('')}${classes}</div></div>`; const grid=document.createElement('div');grid.className='asset-run-grid'; for(const run of dataset.runs||[]){const card=document.createElement('article');card.className='asset-run'; const t=run.training||{},metricText=assetMetricText(run.metrics); card.innerHTML=`<div class="asset-dataset-head"><h4>${escapeHtml(run.model_name)}</h4><span class="asset-badge ok">清单关联</span></div><div class="asset-run-meta"><span>${assetTime(run.created_at)} · ${escapeHtml(run.status)}</span><span>${t.input_size?`${t.input_size[1]}×${t.input_size[0]}`:'尺寸未知'}${t.base_model?' · 基础 '+escapeHtml(t.base_model):''}${t.epochs_requested?' · '+t.epochs_requested+' epochs':''}${t.batch?' · batch '+t.batch:''}</span>${metricText?`<span>${escapeHtml(metricText)}</span>`:''}<span>${escapeHtml(run.output_dir)}</span></div>`; const classesArtifact=(run.artifacts||[]).find(item=>item.kind==='classes'&&item.exists); for(const artifact of (run.artifacts||[]).filter(item=>['pt','onnx'].includes(item.kind))){const row=document.createElement('div');row.className='artifact-row';row.innerHTML=`<div class="artifact-name"><b>${escapeHtml(artifact.name)}</b><span>${artifact.exists?artifact.size_mb+' MB':'文件缺失'}</span></div>`; const actions=document.createElement('div');actions.className='asset-actions'; if(artifact.exists&&artifact.kind==='pt'){const test=document.createElement('button');test.className='btn';test.textContent='用于测试';test.onclick=()=>useModelAsset(artifact.path,'test',classesArtifact?.path||'');actions.appendChild(test)} if(artifact.exists){const deploy=document.createElement('button');deploy.className='btn';deploy.textContent='用于部署';deploy.onclick=()=>useModelAsset(artifact.path,'deploy',classesArtifact?.path||''); const copy=document.createElement('button');copy.className='btn';copy.textContent='复制路径';copy.onclick=()=>copyAssetPath(artifact.path);actions.append(deploy,copy)} row.appendChild(actions);card.appendChild(row)} if((run.deployments||[]).length){const deployments=document.createElement('div');deployments.className='asset-deployments';deployments.textContent='已部署：'+run.deployments.map(item=>`${item.target_label} / ${String(item.format).toUpperCase()}${item.chip?' / '+item.chip:''}`).join('；');card.appendChild(deployments)} grid.appendChild(card)} section.appendChild(grid);box.appendChild(section)}}
+function renderModelAssets(){const catalog=modelAssetCatalog||{summary:{},datasets:[]},summary=catalog.summary||{}; setText('asset-dataset-count',summary.dataset_count||0);setText('asset-run-count',summary.run_count||0);setText('asset-model-count',summary.model_count||0);setText('asset-deployment-count',summary.deployment_count||0); const roots=document.getElementById('asset-roots-note'); if(roots) roots.textContent=(catalog.roots||[]).length?`已索引 ${(catalog.roots||[]).length} 个目录`:'尚未登记扫描目录'; const box=document.getElementById('model-assets'); if(!box) return; const query=String(document.getElementById('asset-search')?.value||'').trim().toLowerCase(); const datasets=(catalog.datasets||[]).filter(item=>!query||JSON.stringify(item).toLowerCase().includes(query)); box.innerHTML=''; if(!datasets.length){box.innerHTML=`<div class="empty">${query?'没有匹配的模型资产。':'尚未找到模型资产。完成一次新训练，或登记已有模型。'}</div>`;return} for(const dataset of datasets){const section=document.createElement('section');section.className='asset-dataset'; const classes=(dataset.classes||[]).slice(0,12).map(name=>`<span class="asset-badge">${escapeHtml(name)}</span>`).join(''); section.innerHTML=`<div class="asset-dataset-head"><div><h3>${escapeHtml(dataset.name||'未命名数据集')}</h3><div class="asset-path">${escapeHtml(dataset.root||'')}</div>${dataset.source?`<div class="asset-path">来源：${escapeHtml(dataset.source)}</div>`:''}</div><div class="asset-badges"><span class="asset-badge ok">${(dataset.runs||[]).length} 条模型记录</span>${dataset.image_count?`<span class="asset-badge">${dataset.image_count} 张训练图片</span>`:''}${dataset.version?`<span class="asset-badge">版本 ${escapeHtml(dataset.version)}</span>`:''}${(dataset.tasks||[]).map(task=>`<span class="asset-badge">${escapeHtml(task==='detect'?'目标检测':task==='classify'?'图像分类':task)}</span>`).join('')}${classes}</div></div>`; const grid=document.createElement('div');grid.className='asset-run-grid'; for(const run of dataset.runs||[]){const card=document.createElement('article');card.className='asset-run'; const t=run.training||{},metricText=assetMetricText(run.metrics),runKey=run.manifest||run.artifacts?.find(item=>['pt','onnx'].includes(item.kind))?.path||run.run_id; card.innerHTML=`<div class="asset-dataset-head"><h4>${escapeHtml(run.model_name)}</h4><div class="asset-badges"><label class="asset-badge"><input class="compare-model" type="checkbox" ${modelCompareSelection.has(runKey)?'checked':''}> 对比</label><span class="asset-badge ${run.association==='manual'?'warn':'ok'}">${run.association==='manual'?'手动登记':'训练清单'}</span></div></div><div class="asset-run-meta"><span>${assetTime(run.created_at)} · ${escapeHtml(run.status)}</span><span>${t.input_size?`${t.input_size[1]}×${t.input_size[0]}`:'尺寸未知'}${t.base_model?' · 基础 '+escapeHtml(t.base_model):''}${t.epochs_requested?' · '+t.epochs_requested+' epochs':''}${t.batch?' · batch '+t.batch:''}</span>${metricText?`<span>${escapeHtml(metricText)}</span>`:''}${t.notes?`<span>${escapeHtml(t.notes)}</span>`:''}<span>${escapeHtml(run.output_dir)}</span></div>`;card.querySelector('.compare-model').onchange=event=>event.target.checked?modelCompareSelection.add(runKey):modelCompareSelection.delete(runKey); const classesArtifact=(run.artifacts||[]).find(item=>item.kind==='classes'&&item.exists); for(const artifact of (run.artifacts||[]).filter(item=>['pt','onnx'].includes(item.kind))){const row=document.createElement('div');row.className='artifact-row';row.innerHTML=`<div class="artifact-name"><b>${escapeHtml(artifact.name)}</b><span>${artifact.exists?artifact.size_mb+' MB':'文件缺失'}</span></div>`; const actions=document.createElement('div');actions.className='asset-actions'; if(artifact.exists&&artifact.kind==='pt'){const test=document.createElement('button');test.className='btn';test.textContent='用于测试';test.onclick=()=>useModelAsset(artifact.path,'test',classesArtifact?.path||'');actions.appendChild(test)} if(artifact.exists){const deploy=document.createElement('button');deploy.className='btn';deploy.textContent='用于部署';deploy.onclick=()=>useModelAsset(artifact.path,'deploy',classesArtifact?.path||''); const copy=document.createElement('button');copy.className='btn';copy.textContent='复制路径';copy.onclick=()=>copyAssetPath(artifact.path);actions.append(deploy,copy)} row.appendChild(actions);card.appendChild(row)} if((run.deployments||[]).length){const deployments=document.createElement('div');deployments.className='asset-deployments';deployments.textContent='已部署：'+run.deployments.map(item=>`${item.target_label} / ${String(item.format).toUpperCase()}${item.chip?' / '+item.chip:''}`).join('；');card.appendChild(deployments)} grid.appendChild(card)} section.appendChild(grid);box.appendChild(section)}}
 async function loadModelAssets(showMessage=false){try{const r=await fetch('/api/model-assets');if(!r.ok) throw new Error(`HTTP ${r.status}`);modelAssetCatalog=await r.json();renderModelAssets();if(showMessage) toast(`已读取 ${modelAssetCatalog.summary?.run_count||0} 条训练记录`)}catch(e){toast(e.message)}}
+async function pickExternalModel(){try{const input=document.getElementById('external-model-path');const result=await api('/api/pick-external-model',{initial:input.value});if(result.path)input.value=result.path}catch(error){toast(error.message)}}
+async function registerExternalModel(){try{const active=(projectCatalog.projects||[]).find(item=>item.active);const result=await api('/api/model-assets/register',{model_path:document.getElementById('external-model-path').value,dataset_name:document.getElementById('external-dataset-name').value||active?.name||'未关联数据集',dataset_root:active?.dataset_root||'',project_id:active?.id||'',task:document.getElementById('external-model-task').value,labels:document.getElementById('external-model-labels').value||active?.labels||[],notes:document.getElementById('external-model-notes').value});modelAssetCatalog=result.catalog;renderModelAssets();toast('已有模型已登记到资产库')}catch(error){toast(error.message)}}
+function compareSelectedModels(){const runs=[];for(const dataset of modelAssetCatalog.datasets||[])for(const run of dataset.runs||[]){const key=run.manifest||run.artifacts?.find(item=>['pt','onnx'].includes(item.kind))?.path||run.run_id;if(modelCompareSelection.has(key))runs.push({...run,datasetName:dataset.name})}const box=document.getElementById('model-compare');if(runs.length<2){box.hidden=true;toast('请至少勾选两个模型');return}box.hidden=false;box.innerHTML=`<div class="queue-head"><h3>模型对比</h3><span class="count">${runs.length} 个模型</span></div><div style="overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr><th style="text-align:left;padding:8px">模型</th><th>数据集</th><th>任务</th><th>输入尺寸</th><th>轮次</th><th>Batch</th><th>指标</th><th>文件</th></tr></thead><tbody>${runs.map(run=>{const t=run.training||{},artifact=(run.artifacts||[]).find(item=>['pt','onnx'].includes(item.kind));return `<tr style="border-top:1px solid var(--line)"><td style="padding:9px"><b>${escapeHtml(run.model_name)}</b></td><td>${escapeHtml(run.datasetName)}</td><td>${escapeHtml(run.task)}</td><td>${t.input_size?`${t.input_size[1]}×${t.input_size[0]}`:'-'}</td><td>${escapeHtml(t.epochs_requested||'-')}</td><td>${escapeHtml(t.batch||'-')}</td><td>${escapeHtml(assetMetricText(run.metrics)||'-')}</td><td>${artifact?.exists?artifact.size_mb+' MB':'缺失'}</td></tr>`}).join('')}</tbody></table></div>`;box.scrollIntoView({behavior:'smooth',block:'nearest'})}
 async function pickAssetRoot(){try{const j=await api('/api/pick-asset-root',{values:collect()});if(j.path){setInputValue('asset_scan_root',j.path);await saveValues()}else toast('未选择文件夹')}catch(e){toast(e.message)}}
 async function scanModelAssets(){try{const v=collect();const j=await api('/api/model-assets/scan',{root:v.asset_scan_root,values:v});apply(j.values||{});modelAssetCatalog=j.catalog||modelAssetCatalog;renderModelAssets();await saveValues();toast(`扫描完成：${modelAssetCatalog.summary?.run_count||0} 条训练记录`)}catch(e){toast(e.message)}}
 function renderAnnotationService(){const s=annotationServiceStatus||{};setText('annotation-service-state',s.running?'运行中':'未启动');setText('annotation-service-mode',s.running?(s.shared?'局域网共享':'个人模式'):'-');setText('annotation-workspace-state',s.running?'已连接':'本机');const local=document.getElementById('annotation-local-url');if(local)local.value=s.local_url||'http://127.0.0.1:9000/';const urls=document.getElementById('annotation-lan-urls');if(urls)urls.textContent=s.running&&s.shared&&(s.lan_urls||[]).length?(s.lan_urls||[]).join('\n'):s.running?'当前仅本机访问；切换到共享模式后伙伴才能连接。':'共享模式启动后显示局域网地址'}
@@ -3146,14 +3234,17 @@ async function loadTrainPlots(){try{const r=await fetch('/api/train-plots'); con
 function scheduleLabelResultsRefresh(){clearTimeout(labelResultsTimer); labelResultsTimer=setTimeout(()=>loadLabelResults(),350)}
 async function refreshState(){try{const r=await fetch('/api/state'); if(!r.ok) throw new Error(`HTTP ${r.status}`); const s=await r.json(); setConnectionState(true); apply(s.values||{}); updateTrainProgress(s.train_progress||{}); const log=document.getElementById('log'); log.textContent=(s.logs||[]).join(''); log.scrollTop=log.scrollHeight; const pill=document.getElementById('runPill'); pill.className='pill '+(s.running?'run':'idle'); pill.querySelector('span:last-child').textContent=s.running?'运行中':'空闲'; const jobNames={train:'模型训练',export:'多平台导出',convert:'MaixCAM 专用转换',test:'模型测试',label:'单机快速标注',annotation_personal:'启动个人标注中心',annotation_share:'开启局域网协作标注',annotation_stop:'停止协作标注中心',train_ssh:'训练 SSH 检查',vm_ssh:'转换 SSH 检查'}; document.getElementById('jobInfo').textContent=s.job?`${jobNames[s.job]||s.job} · 开始 ${s.started_at||'-'}${s.finished_at?' · 结束 '+s.finished_at:''}${s.exit_code!==null&&s.exit_code!==undefined?' · 退出码 '+s.exit_code:''}`:'暂无任务'; const errorBox=document.getElementById('lastError'); const failed=!s.running&&s.job&&s.exit_code!==null&&Number(s.exit_code)!==0; if(s.last_error||failed){errorBox.hidden=false; errorBox.textContent=s.last_error||`上次任务失败（退出码 ${s.exit_code}），请打开“运行日志”查看具体原因。`}else errorBox.hidden=true; const box=document.getElementById('markers'); box.innerHTML=''; for(const [k,v] of Object.entries(s.markers||{})){const div=document.createElement('div'); div.className='marker'; div.innerHTML=`<b>${k}</b><span>${v}</span>`; box.appendChild(div)}}catch(e){setConnectionState(false); const pill=document.getElementById('runPill'); if(pill){pill.className='pill idle';pill.querySelector('span:last-child').textContent='未连接'} const errorBox=document.getElementById('lastError'); if(errorBox){errorBox.hidden=false;errorBox.textContent='训练面板未运行。请双击 start_train_panel.cmd，然后刷新此页面。'}}}
 function copyLogs(){navigator.clipboard.writeText(document.getElementById('log').textContent);toast('日志已复制')}
-function showTab(name){const target=document.getElementById('tab-'+name); if(!target) name='train'; document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));document.getElementById('tab-'+name).classList.add('active');document.querySelectorAll('.nav button').forEach(x=>x.classList.toggle('active',x.dataset.tab===name)); localStorage.setItem('yoloTeamPlatformTab',name); if(name==='label') loadLabelResults(); if(name==='assets') loadModelAssets(); if(name==='collab') loadAnnotationService()}
+function showTab(name){const target=document.getElementById('tab-'+name); if(!target) name='projects'; document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));document.getElementById('tab-'+name).classList.add('active');document.querySelectorAll('.nav button').forEach(x=>x.classList.toggle('active',x.dataset.tab===name)); localStorage.setItem('yoloTeamPlatformTab',name); if(name==='projects') loadProjects(); if(name==='label') loadLabelResults(); if(name==='assets') loadModelAssets(); if(name==='collab') loadAnnotationService()}
+function enhanceFormAccessibility(){let index=0;document.querySelectorAll('.field').forEach(field=>{const label=field.querySelector(':scope > label');const control=field.querySelector(':scope > input, :scope > select, :scope > .input-action input, :scope > .input-action select');if(!label||!control)return;if(!control.id)control.id=`field-control-${++index}`;if(!label.htmlFor)label.htmlFor=control.id});document.querySelectorAll('button').forEach(button=>{if(!button.getAttribute('type'))button.setAttribute('type','button')})}
 
 document.querySelectorAll('.nav button').forEach(b=>b.onclick=()=>showTab(b.dataset.tab));
 document.querySelectorAll('input,select').forEach(el=>{const handler=()=>{if(el.id==='label_prefix') rawLabelPrefix.manual=true; if((el.id==='train_images_dir'||el.id==='train_annotations_dir')&&String(values.prepared_dataset_yaml||'').trim()){setInputValue('prepared_dataset_yaml',''); updatePreparedDatasetUI()} if(el.name==='train_task') updateTrainTaskUI(); if(el.name==='label_source_type') updateLabelSourceUI(); collect(); updateCurrentVideo(); saveValues(); updateCommands(); if(['train_images_dir','base_model','img_width','img_height','image_resize_mode','batch','train_cache'].includes(el.id)||el.name==='train_device'||el.name==='train_task') scheduleResourceEstimate(); if(['label_images_dir','label_annotations_dir','label_annotations_dir_images','label_images_input_dir'].includes(el.id)) scheduleLabelResultsRefresh()}; el.addEventListener('input',handler); el.addEventListener('change',handler)});
 if(localStorage.getItem('yoloTeamPlatformAdvanced')==='1'){document.body.classList.add('show-advanced');setText('advanced-toggle','收起更多设置')}
-showTab(localStorage.getItem('yoloTeamPlatformTab')||'train');
+enhanceFormAccessibility();
+showTab(localStorage.getItem('yoloTeamPlatformTab')||'projects');
 updateSplitRatio();
 loadDeviceProfiles();
+loadProjects();
 refreshState(); setInterval(refreshState,1400);
 
 
@@ -3164,7 +3255,7 @@ refreshState(); setInterval(refreshState,1400);
 
 
 class PanelHandler(BaseHTTPRequestHandler):
-    server_version = "YOLOTeamTrainingPlatform/3.0"
+    server_version = "YOLOTeamTrainingPlatform/3.2"
 
     def log_message(self, format: str, *args: Any) -> None:
         return
@@ -3226,6 +3317,37 @@ class PanelHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/annotation-service":
             self.send_json(annotation_service_status())
+            return
+        if parsed.path == "/api/projects":
+            self.send_json(project_catalog())
+            return
+        if parsed.path == "/api/project-image":
+            try:
+                params = parse_qs(parsed.query)
+                project_id = params.get("project_id", [""])[0]
+                relative_path = params.get("path", [""])[0]
+                catalog = project_catalog(include_health=False)
+                project = next((item for item in catalog["projects"] if item.get("id") == project_id), None)
+                if project is None:
+                    raise ValueError("项目不存在。")
+                dataset_root = Path(project.get("dataset_root") or project.get("root") or "").expanduser().resolve()
+                image_path = resolve_under(relative_path, dataset_root)
+                if not image_path.is_file() or image_path.suffix.lower() not in TRAIN_IMAGE_EXTENSIONS:
+                    raise ValueError("图片不存在或格式不受支持。")
+                raw = image_path.read_bytes()
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", mimetypes.guess_type(str(image_path))[0] or "application/octet-stream")
+                self.send_header("Cache-Control", "private, max-age=60")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+            except Exception as exc:
+                message = str(exc).encode("utf-8", errors="replace")
+                self.send_response(HTTPStatus.BAD_REQUEST)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Content-Length", str(len(message)))
+                self.end_headers()
+                self.wfile.write(message)
             return
         if parsed.path == "/api/model-assets":
             with STATE_LOCK:
@@ -3384,6 +3506,47 @@ class PanelHandler(BaseHTTPRequestHandler):
                     STATE["values"] = values.copy()
                 self.send_json({"ok": True, "values": values, "path": str(USER_DEFAULTS_FILE)})
                 return
+            if self.path == "/api/projects/create":
+                raw_labels = body.get("labels")
+                labels = raw_labels if isinstance(raw_labels, list) else str(raw_labels or "").replace("，", ",").split(",")
+                project = create_project(
+                    str(body.get("name") or ""),
+                    task=str(body.get("task") or "detect"),
+                    labels=labels,
+                    dataset_root=str(body.get("dataset_root") or ""),
+                )
+                with STATE_LOCK:
+                    values = apply_project_to_values(project, STATE["values"])
+                    STATE["values"] = values.copy()
+                self.send_json({"ok": True, "project": project, "values": values, "catalog": project_catalog()})
+                return
+            if self.path == "/api/projects/activate":
+                project = activate_project(str(body.get("project_id") or ""))
+                with STATE_LOCK:
+                    values = apply_project_to_values(project, STATE["values"])
+                    STATE["values"] = values.copy()
+                self.send_json({"ok": True, "project": project, "values": values, "catalog": project_catalog()})
+                return
+            if self.path == "/api/projects/update":
+                updates = body.get("updates") if isinstance(body.get("updates"), dict) else {}
+                project = update_project(str(body.get("project_id") or ""), updates)
+                with STATE_LOCK:
+                    values = apply_project_to_values(project, STATE["values"])
+                    STATE["values"] = values.copy()
+                self.send_json({"ok": True, "project": project, "values": values, "catalog": project_catalog()})
+                return
+            if self.path == "/api/projects/inspect":
+                catalog = project_catalog(include_health=False)
+                project_id = str(body.get("project_id") or "")
+                project = next((item for item in catalog["projects"] if item.get("id") == project_id), None)
+                if project is None:
+                    raise ValueError("项目不存在。")
+                self.send_json({"ok": True, "dataset": inspect_dataset(project.get("dataset_root") or project.get("root"), task=str(project.get("task") or "detect")), "catalog": project_catalog()})
+                return
+            if self.path == "/api/pick-project-dataset-root":
+                initial = str(body.get("initial") or "")
+                self.send_json({"path": pick_directory(initial, "选择项目数据集目录")})
+                return
             if self.path == "/api/pick-test-image":
                 values = clean_values(body.get("values"))
                 self.send_json({"path": pick_image_file(values.get("test_image_file", ""))})
@@ -3481,6 +3644,25 @@ class PanelHandler(BaseHTTPRequestHandler):
                 with STATE_LOCK:
                     STATE["values"] = values.copy()
                 self.send_json({"ok": True, "catalog": model_asset_catalog(values), "values": values})
+                return
+            if self.path == "/api/model-assets/register":
+                raw_labels = body.get("labels")
+                labels = raw_labels if isinstance(raw_labels, list) else str(raw_labels or "").replace("，", ",").split(",")
+                with MODEL_REGISTRY_LOCK:
+                    record = register_external_model(
+                        MODEL_REGISTRY_FILE,
+                        str(body.get("model_path") or ""),
+                        dataset_name=str(body.get("dataset_name") or "未关联数据集"),
+                        dataset_root=str(body.get("dataset_root") or ""),
+                        task=str(body.get("task") or "unknown"),
+                        project_id=str(body.get("project_id") or ""),
+                        labels=labels,
+                        notes=str(body.get("notes") or ""),
+                    )
+                self.send_json({"ok": True, "record": record, "catalog": model_asset_catalog(clean_values({}))})
+                return
+            if self.path == "/api/pick-external-model":
+                self.send_json({"path": pick_model_file(str(body.get("initial") or ""), include_onnx=True)})
                 return
             if self.path == "/api/pick-test-image-folder":
                 values = clean_values(body.get("values"))

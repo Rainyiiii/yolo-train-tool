@@ -30,6 +30,7 @@ SCRIPT_ROOT = Path(__file__).resolve().parent
 DEFAULT_WORKSPACE = ANNOTATION_HUB_DIR
 SESSION_COOKIE = "yolo_team_annotation_session"
 MAX_JSON_BODY = 4 * 1024 * 1024
+MAX_IMAGE_BODY = 64 * 1024 * 1024
 LOGIN_WINDOW_SECONDS = 5 * 60
 LOGIN_ATTEMPTS = 10
 LOGIN_FAILURES: dict[str, list[float]] = {}
@@ -248,6 +249,25 @@ class AnnotationHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         try:
             self._validate_origin()
+            parsed = urllib.parse.urlparse(self.path)
+            if parsed.path == "/api/projects/upload-image":
+                user = self.current_user()
+                assert user is not None
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                except ValueError as exc:
+                    raise AnnotationError("请求长度无效。") from exc
+                if length <= 0 or length > MAX_IMAGE_BODY:
+                    raise AnnotationError("单张图片必须小于 64 MB。", 413)
+                params = urllib.parse.parse_qs(parsed.query)
+                item = self.server.store.import_uploaded_image(
+                    user,
+                    int(params.get("project_id", ["0"])[0]),
+                    params.get("filename", [""])[0],
+                    self.rfile.read(length),
+                )
+                self.send_json({"item": item})
+                return
             body = self.read_json()
             if self.path == "/api/setup":
                 user = self.server.store.create_user(body.get("username", ""), body.get("password", ""), "admin")

@@ -14,7 +14,9 @@ import shutil
 import sqlite3
 import time
 import uuid
+from io import BytesIO
 from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Any, Iterable
 
 from PIL import Image
@@ -33,6 +35,16 @@ class AnnotationError(ValueError):
     def __init__(self, message: str, status: int = 400):
         super().__init__(message)
         self.status = status
+
+
+class ClosingConnection(sqlite3.Connection):
+    """Commit/rollback like sqlite3.Connection, then always release Windows file handles."""
+
+    def __exit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> bool:
+        try:
+            return bool(super().__exit__(exc_type, exc_value, traceback))
+        finally:
+            self.close()
 
 
 def _now() -> int:
@@ -87,7 +99,7 @@ class AnnotationStore:
         self._initialize()
 
     def connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.db_path, timeout=20)
+        connection = sqlite3.connect(self.db_path, timeout=20, factory=ClosingConnection)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("PRAGMA busy_timeout=10000")
@@ -310,6 +322,45 @@ class AnnotationStore:
             connection.execute("UPDATE projects SET updated_at=? WHERE id=?", (now, project_id))
             self._event(connection, project_id, None, actor["id"], "images_imported", {"count": imported, "source": str(source)})
         return imported
+
+    def import_uploaded_image(self, actor: dict[str, Any], project_id: int, filename: str, raw: bytes) -> dict[str, Any]:
+        if actor["role"] not in {"admin", "reviewer"}:
+            raise AnnotationError("只有管理员或审核员可以上传图片。", 403)
+        self.get_project(project_id, actor)
+        normalized = str(filename or "").replace("\\", "/").strip("/")
+        relative = PurePosixPath(normalized)
+        if not normalized or relative.is_absolute() or ".." in relative.parts:
+            raise AnnotationError("图片文件名无效。")
+        suffix = Path(relative.name).suffix.lower()
+        if suffix not in IMAGE_EXTENSIONS:
+            raise AnnotationError("图片格式不受支持。")
+        try:
+            with Image.open(BytesIO(raw)) as image:
+                width, height = image.size
+                image.verify()
+        except (OSError, ValueError) as exc:
+            raise AnnotationError("上传内容不是可读取的图片。") from exc
+        destination = self.projects_dir / str(project_id) / "images"
+        destination.mkdir(parents=True, exist_ok=True)
+        stored_name = f"{uuid.uuid4().hex}{suffix}"
+        destination_path = destination / stored_name
+        now = _now()
+        with self.connect() as connection:
+            if connection.execute(
+                "SELECT 1 FROM items WHERE project_id=? AND relative_source=?",
+                (project_id, relative.as_posix()),
+            ).fetchone():
+                raise AnnotationError("该项目中已存在同名图片。", 409)
+            destination_path.write_bytes(raw)
+            cursor = connection.execute(
+                """INSERT INTO items(
+                       project_id,original_name,relative_source,stored_name,width,height,created_at,updated_at
+                   ) VALUES(?,?,?,?,?,?,?,?)""",
+                (project_id, relative.name, relative.as_posix(), stored_name, width, height, now, now),
+            )
+            connection.execute("UPDATE projects SET updated_at=? WHERE id=?", (now, project_id))
+            self._event(connection, project_id, int(cursor.lastrowid), actor["id"], "image_uploaded", {"source": relative.as_posix()})
+        return {"id": int(cursor.lastrowid), "name": relative.name, "relative_source": relative.as_posix()}
 
     def _project_access_clause(self, actor: dict[str, Any]) -> tuple[str, tuple[Any, ...]]:
         if actor["role"] in {"admin", "reviewer"}:

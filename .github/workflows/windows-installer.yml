@@ -29,7 +29,25 @@ jobs:
 
       - name: Build Setup
         shell: pwsh
-        run: .\installer\windows\build-installer.ps1
+        env:
+          WINDOWS_SIGNING_CERT_BASE64: ${{ secrets.WINDOWS_SIGNING_CERT_BASE64 }}
+          YOLO_SIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERT_PASSWORD }}
+          YOLO_SIGN_TIMESTAMP_URL: ${{ vars.WINDOWS_SIGNING_TIMESTAMP_URL }}
+        run: |
+          $certificatePath = Join-Path $env:RUNNER_TEMP "yolo-team-signing.pfx"
+          if ($env:WINDOWS_SIGNING_CERT_BASE64) {
+            [IO.File]::WriteAllBytes($certificatePath, [Convert]::FromBase64String($env:WINDOWS_SIGNING_CERT_BASE64))
+            $env:YOLO_SIGN_PFX = $certificatePath
+          }
+          if ($env:GITHUB_REF -like "refs/tags/*") { $env:YOLO_REQUIRE_SIGNING = "1" }
+          .\installer\windows\build-installer.ps1
+
+      - name: Remove signing certificate
+        if: always()
+        shell: pwsh
+        run: |
+          $certificatePath = Join-Path $env:RUNNER_TEMP "yolo-team-signing.pfx"
+          if (Test-Path -LiteralPath $certificatePath) { Remove-Item -LiteralPath $certificatePath -Force }
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
