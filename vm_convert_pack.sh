@@ -5,9 +5,9 @@ JOB_DIR="${1:-}"
 TS="${2:-$(date +%Y%m%d_%H%M%S)}"
 IMG_WIDTH="${IMG_WIDTH:-${IMG_SIZE:-448}}"
 IMG_HEIGHT="${IMG_HEIGHT:-${IMG_SIZE:-448}}"
-MODEL_NAME="${MODEL_NAME:-douzi_yolov8n_448}"
+MODEL_NAME="${MODEL_NAME:-my_yolo_model}"
 OPERATOR_MODE="${OPERATOR_MODE:-recommended}"
-CONTAINER_NAME="${CONTAINER_NAME:-tpu-env-douzi}"
+CONTAINER_NAME="${CONTAINER_NAME:-myautotrain-tpu-env}"
 IMAGE_NAME="${IMAGE_NAME:-sophgo/tpuc_dev:latest}"
 
 if [ -z "$JOB_DIR" ]; then
@@ -31,7 +31,7 @@ cd /workspace
 
 IMG_WIDTH="${IMG_WIDTH:-${IMG_SIZE:-448}}"
 IMG_HEIGHT="${IMG_HEIGHT:-${IMG_SIZE:-448}}"
-MODEL_NAME="${MODEL_NAME:-douzi_yolov8n_448}"
+MODEL_NAME="${MODEL_NAME:-my_yolo_model}"
 OPERATOR_MODE="${OPERATOR_MODE:-recommended}"
 ONNX="${MODEL_NAME}.onnx"
 CVIMODEL="${MODEL_NAME}_int8.cvimodel"
@@ -42,8 +42,9 @@ if ! command -v model_transform.py >/dev/null 2>&1; then
 fi
 
 python3 - <<'PY'
+import os
 import onnx
-m = onnx.load('douzi_yolov8n_448.onnx')
+m = onnx.load(f"{os.environ['MODEL_NAME']}.onnx")
 print('ONNX graph outputs:')
 for o in m.graph.output:
     print(o.name)

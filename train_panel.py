@@ -3,6 +3,7 @@ import argparse
 import importlib.util
 import json
 import locale
+import math
 import mimetypes
 import os
 import re
@@ -30,6 +31,8 @@ from urllib.parse import parse_qs, urlparse
 import cv2
 import yaml
 
+from device_profiles import public_device_profiles
+
 
 
 def configure_stdio() -> None:
@@ -52,9 +55,10 @@ configure_stdio()
 SCRIPT_ROOT = Path(__file__).resolve().parent
 
 WORKFLOW_SCRIPT = SCRIPT_ROOT / "host_train_export.py"
+EXPORT_SCRIPT = SCRIPT_ROOT / "export_model.py"
 TEST_SCRIPT = SCRIPT_ROOT / "model_test.py"
 LABEL_SCRIPT = SCRIPT_ROOT / "video_track_label.py"
-DEFAULT_VM_WORK_DIR = "~/桌面/12345/douzi_maixcam_jobs"
+DEFAULT_VM_WORK_DIR = "~/myautotrain/maixcam_jobs"
 USER_DEFAULTS_FILE = SCRIPT_ROOT / "train_panel_defaults.json"
 STOP_EXPORT_SIGNAL_FILE = SCRIPT_ROOT / ".train_stop_export.signal"
 LATEST_JOB_LOG_FILE = SCRIPT_ROOT / "logs" / "latest_job.log"
@@ -101,8 +105,8 @@ DEFAULT_VALUES: dict[str, Any] = {
     "train_mode": "local",
     "remote_train_user": "",
     "remote_train_host": "127.0.0.1",
-    "remote_train_port": "8989",
-    "remote_train_work_dir": "C:/douzi_train_jobs",
+    "remote_train_port": "22",
+    "remote_train_work_dir": "C:/myautotrain_train_jobs",
     "model_path": "",
     "classes_path": "",
     "calib_dir": "",
@@ -111,6 +115,13 @@ DEFAULT_VALUES: dict[str, Any] = {
     "vm_host": "",
     "vm_work_dir": DEFAULT_VM_WORK_DIR,
     "skip_vm_convert": False,
+    "deploy_model": "",
+    "deployment_target": "generic_onnx",
+    "export_format": "auto",
+    "export_chip": "",
+    "export_output_dir": str(SCRIPT_ROOT / "deploy"),
+    "export_data": "",
+    "export_int8": False,
     "test_model": "",
     "test_source": "camera",
     "test_image_file": "",
@@ -185,6 +196,8 @@ class LabelTrackObject:
     tracker: object
     ok: bool = True
     sample_count: int = 1
+    quality: float = 1.0
+    warning: str = ""
 
 
 class TemplateTracker:
@@ -193,6 +206,7 @@ class TemplateTracker:
         self.min_score = min_score
         self.template = None
         self.bbox: Optional[tuple[int, int, int, int]] = None
+        self.last_score: Optional[float] = None
 
     def init(self, frame, bbox: tuple[int, int, int, int]) -> bool:
         x, y, w, h = sanitize_label_bbox(bbox, frame.shape[1], frame.shape[0])
@@ -216,6 +230,7 @@ class TemplateTracker:
             return False, self.bbox
         result = cv2.matchTemplate(search, self.template, cv2.TM_CCOEFF_NORMED)
         _, score, _, loc = cv2.minMaxLoc(result)
+        self.last_score = float(score)
         self.bbox = sanitize_label_bbox((sx1 + loc[0], sy1 + loc[1], w, h), frame.shape[1], frame.shape[0])
         return score >= self.min_score, self.bbox
 
@@ -228,6 +243,7 @@ class MultiTemplateTracker:
         self.samples: list[tuple[Any, int, int]] = []
         self.bbox: Optional[tuple[int, int, int, int]] = None
         self.primary = None
+        self.last_score: Optional[float] = None
 
     def _reset_primary(self, frame, bbox: tuple[int, int, int, int]) -> None:
         self.primary = make_label_cv_tracker("csrt")
@@ -236,7 +252,7 @@ class MultiTemplateTracker:
 
     def init(self, frame, bbox: tuple[int, int, int, int]) -> bool:
         if make_label_cv_tracker("csrt") is None:
-            raise RuntimeError("Multi-template 需要 OpenCV CSRT；请安装 opencv-contrib-python 后重启标注工具。")
+            raise RuntimeError("多视角实验模式需要 OpenCV CSRT；请安装 opencv-contrib-python 后重启标注工具。")
         self.samples = []
         self.bbox = None
         self.primary = None
@@ -271,7 +287,9 @@ class MultiTemplateTracker:
                 best_score = score
                 best_bbox = sanitize_label_bbox((sx1 + loc[0], sy1 + loc[1], sample_w, sample_h), frame.shape[1], frame.shape[0])
         if best_score < self.min_score:
+            self.last_score = max(0.0, float(best_score))
             return False, self.bbox
+        self.last_score = float(best_score)
         self.bbox = best_bbox
         self._reset_primary(frame, self.bbox)
         return True, self.bbox
@@ -283,6 +301,7 @@ class MultiTemplateTracker:
             ok, bbox = self.primary.update(frame)
             if ok:
                 self.bbox = sanitize_label_bbox(bbox, frame.shape[1], frame.shape[0])
+                self.last_score = None
                 return True, self.bbox
         return self._recover_from_templates(frame)
 
@@ -291,6 +310,54 @@ def sanitize_label_bbox(bbox, width: int, height: int) -> tuple[int, int, int, i
     x, y, w, h = [int(round(value)) for value in bbox]
     x, y = max(0, min(x, width - 1)), max(0, min(y, height - 1))
     return x, y, max(1, min(w, width - x)), max(1, min(h, height - y))
+
+
+def label_tracking_quality(
+    previous: tuple[int, int, int, int],
+    current: tuple[int, int, int, int],
+    frame_width: int,
+    frame_height: int,
+    tracker_score: Optional[float] = None,
+) -> tuple[float, str]:
+    """Conservative drift check used before an automatically tracked box is saved."""
+    px, py, pw, ph = sanitize_label_bbox(previous, frame_width, frame_height)
+    cx, cy, cw, ch = sanitize_label_bbox(current, frame_width, frame_height)
+    previous_area = max(1.0, float(pw * ph))
+    current_area = max(1.0, float(cw * ch))
+    area_ratio = current_area / previous_area
+    previous_center = (px + pw / 2.0, py + ph / 2.0)
+    current_center = (cx + cw / 2.0, cy + ch / 2.0)
+    center_distance = math.hypot(current_center[0] - previous_center[0], current_center[1] - previous_center[1])
+    reference_diagonal = max(20.0, math.hypot(pw, ph))
+    motion_ratio = center_distance / reference_diagonal
+    previous_aspect = pw / max(1.0, float(ph))
+    current_aspect = cw / max(1.0, float(ch))
+    aspect_ratio = current_aspect / max(0.01, previous_aspect)
+
+    quality = 1.0
+    warnings: list[str] = []
+    if motion_ratio > 2.5:
+        quality = 0.0
+        warnings.append("目标位置突变")
+    elif motion_ratio > 1.25:
+        quality *= 0.45
+        warnings.append("目标移动幅度较大")
+    elif motion_ratio > 0.75:
+        quality *= 0.75
+
+    if not 0.35 <= area_ratio <= 2.8:
+        quality *= 0.2
+        warnings.append("目标尺寸突变")
+    elif not 0.6 <= area_ratio <= 1.7:
+        quality *= 0.7
+    if not 0.45 <= aspect_ratio <= 2.2:
+        quality *= 0.35
+        warnings.append("目标形状突变")
+    if tracker_score is not None:
+        quality = min(quality, max(0.0, min(1.0, float(tracker_score))))
+        if tracker_score < 0.45:
+            warnings.append("图像匹配置信度低")
+    return round(max(0.0, min(1.0, quality)), 3), "；".join(dict.fromkeys(warnings))
 
 
 def make_label_cv_tracker(name: str):
@@ -328,6 +395,7 @@ def label_object_data(obj: LabelTrackObject) -> dict[str, Any]:
     return {
         "id": obj.obj_id, "label": obj.label, "x": x, "y": y, "w": w, "h": h,
         "ok": obj.ok, "sample_count": obj.sample_count,
+        "quality": obj.quality, "warning": obj.warning,
     }
 
 
@@ -377,6 +445,8 @@ def clean_values(values: Optional[dict[str, Any]]) -> dict[str, Any]:
         for key in merged:
             if key in source:
                 merged[key] = as_bool(source[key]) if isinstance(DEFAULT_VALUES[key], bool) else str(source[key])
+        if not str(source.get("deploy_model", "")).strip():
+            merged["deploy_model"] = str(source.get("test_model") or source.get("model_path") or "")
     return merged
 
 
@@ -1348,6 +1418,8 @@ def parse_marker(line: str) -> None:
         "TRAIN_CALIB_DIR=": "calib_dir",
         "TRAIN_TEST_IMAGE=": "test_image",
         "TRAIN_MODEL_PT=": "test_model",
+        "DEPLOY_ARTIFACT=": "deploy_artifact",
+        "DEPLOY_MANIFEST=": "deploy_manifest",
         "TRAIN_STOP_EXPORT_REQUESTED=": "stop_export",
         "TEST_OUTPUT_IMAGE=": "test_output_image",
 
@@ -1364,6 +1436,8 @@ def parse_marker(line: str) -> None:
                     STATE["values"][key] = value
                 if key == "test_model" and not STATE["values"].get("model_path"):
                     STATE["values"]["model_path"] = value
+                if key == "test_model":
+                    STATE["values"]["deploy_model"] = value
                 return
 
 
@@ -1425,6 +1499,28 @@ def build_convert_cmd(values: dict[str, Any]) -> list[Any]:
     return cmd
 
 
+def build_export_cmd(values: dict[str, Any]) -> list[Any]:
+    cmd = [
+        sys.executable,
+        str(EXPORT_SCRIPT),
+        "--model", values["deploy_model"],
+        "--target", values["deployment_target"],
+        "--format", values["export_format"],
+        "--imgsz", f"{values['img_height']},{values['img_width']}",
+    ]
+    for option, key in (
+        ("--chip", "export_chip"),
+        ("--data", "export_data"),
+        ("--classes", "classes_path"),
+        ("--output-dir", "export_output_dir"),
+    ):
+        if values.get(key, "").strip():
+            cmd += [option, values[key]]
+    if as_bool(values.get("export_int8")):
+        cmd.append("--int8")
+    return cmd
+
+
 def build_test_cmd(values: dict[str, Any]) -> list[Any]:
     cmd = [
         sys.executable,
@@ -1475,6 +1571,8 @@ def command_for(action: str, values: dict[str, Any]) -> list[Any]:
         return build_train_cmd(values)
     if action == "convert":
         return build_convert_cmd(values)
+    if action == "export":
+        return build_export_cmd(values)
     if action == "test":
         return build_test_cmd(values)
     if action == "label":
@@ -1537,7 +1635,7 @@ def validate(action: str, values: dict[str, Any]) -> None:
         for key, label in (("img_width", "图片宽度"), ("img_height", "图片高度")):
             value = parse_int(str(values.get(key, "")))
             if value is None or value < 32 or value % 32:
-                raise ValueError(f"{label}必须是大于等于 32 的 32 倍数，以兼容 YOLO 和 MaixCAM 转换。")
+                raise ValueError(f"{label}必须是大于等于 32 的 32 倍数，以兼容 YOLO 和常见边缘设备。")
         if values.get("image_resize_mode") not in {"crop", "letterbox", "stretch"}:
             raise ValueError("图片适配方式必须为裁剪、等比缩放或拉伸。")
         if not WORKFLOW_SCRIPT.exists():
@@ -1550,6 +1648,21 @@ def validate(action: str, values: dict[str, Any]) -> None:
         for key, label in (("model_path", "ONNX 模型"), ("classes_path", "classes.txt"), ("calib_dir", "校准图片目录")):
             if not values[key].strip():
                 raise ValueError(f"{label} 不能为空。")
+    elif action == "export":
+        if not EXPORT_SCRIPT.is_file():
+            raise ValueError(f"未找到多平台导出脚本：{EXPORT_SCRIPT}")
+        source = Path(values.get("deploy_model", "").strip()).expanduser()
+        if not source.is_file():
+            raise ValueError("请选择训练完成的 .pt 或已有 .onnx 模型。")
+        if source.suffix.lower() not in {".pt", ".onnx"}:
+            raise ValueError("部署模型目前支持 .pt 或 .onnx。")
+        if values.get("deployment_target") not in {
+            "generic_onnx", "raspberry_pi", "rockchip_rknn", "drobotics_rdk",
+            "maixcam", "nvidia_jetson", "intel_openvino",
+        }:
+            raise ValueError("请选择有效的部署平台。")
+        if as_bool(values.get("export_int8")) and not values.get("export_data", "").strip():
+            raise ValueError("INT8 导出需要填写 data.yaml 作为代表性校准数据。")
     elif action == "test":
         if not TEST_SCRIPT.exists():
             raise ValueError(f"未找到 model_test.py: {TEST_SCRIPT}")
@@ -1958,6 +2071,9 @@ def label_session_state(session: dict[str, Any]) -> dict[str, Any]:
         "max_frames": session["max_frames"],
         "ended": session["ended"],
         "lost": any(not obj.ok for obj in session["objects"]),
+        "review_skipped": session.get("review_skipped", 0),
+        "last_warning": session.get("last_warning", ""),
+        "last_auto_saved": session.get("last_auto_saved", False),
     }
 
 
@@ -2036,6 +2152,7 @@ def start_label_session(values: dict[str, Any]) -> dict[str, Any]:
         "id": session_id, "lock": threading.RLock(), "source_type": source_type, "cap": cap, "files": files,
         "frame": frame, "frame_index": frame_index, "frame_count": frame_count, "source_image_path": source_image_path,
         "objects": [], "next_object_id": 1, "saved": 0, "processed": 0, "ended": False,
+        "review_skipped": 0, "last_warning": "", "last_auto_saved": False,
         "labels": parse_label_names(values["label_name"]), "tracker": values["label_tracker"],
         "interval": max(1, int(values["label_interval"] or 1)), "max_frames": max(0, int(values["label_max_frames"] or 0)),
         "images_dir": images_dir, "annotations_dir": annotations_dir, "prefix": values["label_prefix"].strip() or "track",
@@ -2047,9 +2164,17 @@ def start_label_session(values: dict[str, Any]) -> dict[str, Any]:
     return label_session_state(session)
 
 
-def save_label_session_sample(session: dict[str, Any]) -> bool:
-    objects = [obj for obj in session["objects"] if obj.ok]
+def save_label_session_sample(session: dict[str, Any], automatic: bool = False) -> bool:
+    objects = session["objects"]
     if not objects:
+        session["last_warning"] = "当前帧没有目标框。"
+        return False
+    invalid = [obj for obj in objects if not obj.ok]
+    if invalid:
+        names = "、".join(f"#{obj.obj_id} {obj.label}" for obj in invalid[:4])
+        session["last_warning"] = f"{names} 需要复核；为避免生成缺框标签，本帧未保存。"
+        if automatic:
+            session["review_skipped"] = session.get("review_skipped", 0) + 1
         return False
     frame = session["frame"]
     source_image_path = session["source_image_path"]
@@ -2065,6 +2190,8 @@ def save_label_session_sample(session: dict[str, Any]) -> bool:
         xml_path = session["annotations_dir"] / f"{stem}.xml"
     write_label_voc_xml(xml_path, image_name, frame, objects)
     session["saved"] += 1
+    session["last_warning"] = ""
+    session["last_auto_saved"] = automatic
     return True
 
 
@@ -2096,14 +2223,30 @@ def advance_label_session(session: dict[str, Any]) -> dict[str, Any]:
         session["source_image_path"] = None
     session["frame"] = frame
     session["processed"] += 1
+    session["last_auto_saved"] = False
+    session["last_warning"] = ""
     for obj in session["objects"]:
         if not obj.ok:
             continue
+        previous_bbox = obj.bbox
         ok, bbox = obj.tracker.update(frame)
         obj.bbox = sanitize_label_bbox(bbox, frame.shape[1], frame.shape[0])
-        obj.ok = bool(ok)
+        tracker_score = getattr(obj.tracker, "last_score", None)
+        obj.quality, drift_warning = label_tracking_quality(
+            previous_bbox, obj.bbox, frame.shape[1], frame.shape[0], tracker_score
+        )
+        obj.ok = bool(ok) and obj.quality >= 0.35
+        if not ok:
+            obj.warning = "跟踪器未找到目标"
+        elif not obj.ok:
+            obj.warning = drift_warning or "跟踪质量过低"
+        else:
+            obj.warning = drift_warning
     if session["objects"] and session["frame_index"] % session["interval"] == 0:
-        save_label_session_sample(session)
+        save_label_session_sample(session, automatic=True)
+    elif any(not obj.ok for obj in session["objects"]):
+        names = "、".join(f"#{obj.obj_id} {obj.label}" for obj in session["objects"] if not obj.ok)
+        session["last_warning"] = f"{names} 跟踪异常，请在继续前复核。"
     return label_session_state(session)
 
 
@@ -2263,7 +2406,7 @@ def pick_image_file(initial_path: str = "") -> str:
     return selected
 
 
-def pick_model_file(initial_path: str = "") -> str:
+def pick_model_file(initial_path: str = "", include_onnx: bool = False) -> str:
     try:
         import tkinter as tk
         from tkinter import filedialog
@@ -2278,8 +2421,8 @@ def pick_model_file(initial_path: str = "") -> str:
     selected = filedialog.askopenfilename(
         parent=root,
         initialdir=initial_dir,
-        title="选择 YOLO 基础模型",
-        filetypes=[("PyTorch 模型", "*.pt"), ("所有文件", "*.*")],
+        title="选择训练或部署模型" if include_onnx else "选择 YOLO 基础模型",
+        filetypes=[("YOLO 模型", "*.pt *.onnx"), ("所有文件", "*.*")] if include_onnx else [("PyTorch 模型", "*.pt"), ("所有文件", "*.*")],
     )
     root.destroy()
     return selected
@@ -2451,7 +2594,7 @@ HTML_PAGE = r'''<!doctype html>
 <style>
 :root{--bg:#09111f;--panel:rgba(255,255,255,.08);--panel2:rgba(255,255,255,.13);--text:#eef6ff;--muted:#9fb0c7;--line:rgba(255,255,255,.14);--blue:#56a8ff;--green:#30d287;--purple:#a78bfa;--orange:#ffbd5a;--red:#ff6678;--shadow:0 24px 70px rgba(0,0,0,.35);font-family:"Microsoft YaHei UI","Segoe UI",system-ui,sans-serif}*{box-sizing:border-box}body{margin:0;color:var(--text);background:radial-gradient(circle at 15% 10%,#173c73 0,#09111f 34%),radial-gradient(circle at 86% 0,#41226d 0,transparent 30%),linear-gradient(135deg,#09111f,#0c1528);min-height:100vh}.wrap{width:min(1380px,calc(100% - 36px));margin:0 auto;padding:28px 0 36px}.hero{display:grid;grid-template-columns:1.2fr .8fr;gap:18px;align-items:stretch;margin-bottom:18px}.card{background:var(--panel);border:1px solid var(--line);box-shadow:var(--shadow);border-radius:26px;backdrop-filter:blur(18px)}.title{padding:30px}.eyebrow{display:inline-flex;gap:8px;align-items:center;color:#cde4ff;background:rgba(86,168,255,.13);border:1px solid rgba(86,168,255,.25);padding:7px 12px;border-radius:999px;font-size:13px}.dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 16px var(--green)}h1{font-size:42px;letter-spacing:-.04em;margin:18px 0 10px}.subtitle{color:var(--muted);line-height:1.8;margin:0;max-width:780px}.guide{padding:24px}.steps{display:grid;gap:12px}.step{display:flex;gap:12px;align-items:flex-start;padding:13px;border:1px solid var(--line);background:rgba(255,255,255,.06);border-radius:18px}.num{flex:0 0 30px;width:30px;height:30px;border-radius:12px;background:linear-gradient(135deg,var(--blue),var(--purple));display:grid;place-items:center;font-weight:800}.step b{display:block;margin-bottom:3px}.step span{color:var(--muted);font-size:13px;line-height:1.5}.layout{display:grid;grid-template-columns:290px 1fr;gap:18px}.side{position:sticky;top:18px;height:fit-content;padding:16px}.nav{display:grid;gap:10px}.nav button{all:unset;cursor:pointer;padding:15px 16px;border-radius:18px;color:var(--muted);border:1px solid transparent;display:flex;justify-content:space-between;align-items:center}.nav button.active{background:linear-gradient(135deg,rgba(86,168,255,.22),rgba(167,139,250,.18));border-color:rgba(255,255,255,.18);color:var(--text)}.status{margin-top:14px;padding:14px;border-radius:18px;background:rgba(0,0,0,.23);border:1px solid var(--line);overflow:hidden}.pill{display:inline-flex;align-items:center;gap:8px;padding:7px 11px;border-radius:999px;font-size:13px;border:1px solid var(--line);color:var(--muted);max-width:100%}.pill span:last-child{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.pill.run{color:#bff8dc;border-color:rgba(48,210,135,.35);background:rgba(48,210,135,.1)}.pill.idle{color:#d5e5ff;background:rgba(86,168,255,.08)}.main{display:grid;gap:18px}.tab{display:none}.tab.active{display:block}.section{padding:22px;margin-bottom:18px}.section h2{margin:0 0 6px;font-size:24px}.hint{margin:0 0 18px;color:var(--muted);line-height:1.65}.grid{display:grid;grid-template-columns:repeat(12,1fr);gap:14px}.field{grid-column:span 6}.field.sm{grid-column:span 3}.field.full{grid-column:1/-1}label{display:block;color:#d9e9ff;font-size:13px;margin:0 0 7px}input,select{width:100%;background:rgba(5,12,24,.72);border:1px solid var(--line);border-radius:14px;color:var(--text);padding:12px 13px;outline:none;transition:.2s}input:focus,select:focus{border-color:rgba(86,168,255,.72);box-shadow:0 0 0 4px rgba(86,168,255,.13)}.choice{display:flex;gap:10px;flex-wrap:wrap}.choice label{margin:0;cursor:pointer}.choice input{display:none}.choice span{display:inline-flex;padding:10px 13px;border-radius:14px;border:1px solid var(--line);background:rgba(255,255,255,.06);color:var(--muted)}.choice input:checked+span{color:var(--text);border-color:rgba(86,168,255,.58);background:rgba(86,168,255,.18)}.actions{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin-top:18px}.btns{display:flex;gap:10px;flex-wrap:wrap}.btn{all:unset;cursor:pointer;border-radius:15px;padding:12px 17px;font-weight:700;border:1px solid var(--line);background:var(--panel2)}.btn.primary{background:linear-gradient(135deg,#238bff,#8b5cf6);border:0}.btn.green{background:linear-gradient(135deg,#18aa69,#22c98a);border:0}.btn.blue{background:linear-gradient(135deg,#1877f2,#56a8ff);border:0}.btn.red{background:rgba(255,102,120,.14);border-color:rgba(255,102,120,.35);color:#ffd7dd}.cmd{margin-top:14px;background:#050b15;border:1px solid var(--line);border-radius:18px;padding:14px;color:#bad4f6;white-space:pre-wrap;word-break:break-all;font-family:"Cascadia Mono",Consolas,monospace;font-size:12px;line-height:1.55}.log{height:360px;overflow:auto;background:#030813;border:1px solid rgba(255,255,255,.12);border-radius:20px;padding:16px;white-space:pre-wrap;color:#c6f6d5;font-family:"Cascadia Mono",Consolas,monospace;font-size:12px;line-height:1.55}.toast{position:fixed;right:22px;bottom:22px;max-width:420px;padding:14px 16px;border-radius:16px;background:#101d33;border:1px solid var(--line);box-shadow:var(--shadow);display:none}.toast.show{display:block}.mini{color:var(--muted);font-size:12px;margin-top:7px}.markers{display:grid;gap:8px;margin-top:10px;min-width:0}.marker{display:grid;grid-template-columns:1fr;gap:5px;align-items:start;padding:10px;border-radius:14px;background:rgba(255,255,255,.05);border:1px solid var(--line);font-size:12px;color:var(--muted);min-width:0;overflow:hidden}.marker b{color:#dcecff;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.marker span{min-width:0;overflow-wrap:anywhere;word-break:break-all;white-space:normal;line-height:1.45}.gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:14px;margin-top:16px}.sample{overflow:hidden;border-radius:18px;border:1px solid var(--line);background:rgba(255,255,255,.06)}.sample img{width:100%;display:block;aspect-ratio:16/10;object-fit:cover;background:#050b15}.sample .meta{padding:11px;font-size:12px;color:var(--muted);display:grid;gap:8px}.sample .delete{all:unset;cursor:pointer;text-align:center;padding:9px 10px;border-radius:12px;background:rgba(255,102,120,.14);border:1px solid rgba(255,102,120,.35);color:#ffd7dd;font-weight:700}.empty{padding:16px;border:1px dashed var(--line);border-radius:18px;color:var(--muted);margin-top:14px}.input-action{display:flex;gap:10px;align-items:stretch}.input-action input{min-width:0;flex:1}.input-action .btn{white-space:nowrap}@media(max-width:520px){.input-action{flex-direction:column}}.label-workspace{display:grid;grid-template-columns:minmax(280px,360px) 1fr;gap:16px;margin-top:18px}.train-board{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:18px}.progress-card{border:1px solid var(--line);background:rgba(255,255,255,.055);border-radius:22px;padding:16px;overflow:hidden}.progress-card.wide{grid-column:1/-1}.progress-head{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:12px}.progress-head b{font-size:16px}.progress-head span{color:var(--muted);font-size:12px}.bar{height:16px;border-radius:999px;background:rgba(5,12,24,.72);border:1px solid var(--line);overflow:hidden}.bar div{height:100%;border-radius:999px;background:linear-gradient(90deg,var(--green),var(--blue),var(--purple));transition:width .25s ease}.metrics-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-top:12px}.metrics-grid div{padding:10px;border-radius:14px;background:rgba(0,0,0,.18);border:1px solid var(--line);min-width:0}.metrics-grid span{display:block;color:var(--muted);font-size:12px;margin-bottom:4px}.metrics-grid b{display:block;color:#eff8ff;font-size:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.loss-grid{grid-template-columns:repeat(3,1fr)}canvas{width:100%;height:180px;margin-top:10px;border-radius:14px;background:rgba(3,8,19,.72);border:1px solid rgba(255,255,255,.1)}.panel{border:1px solid var(--line);background:rgba(255,255,255,.055);border-radius:22px;padding:16px}.panel h3{margin:0 0 10px;font-size:16px}.queue-head{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:10px}.count{color:var(--muted);font-size:12px}.video-list{display:grid;gap:8px;max-height:300px;overflow:auto;padding-right:4px}.video-preview{margin-top:14px}.video-preview-box{min-height:220px;border:1px dashed var(--line);border-radius:18px;background:rgba(5,12,24,.42);display:grid;place-items:center;overflow:hidden;color:var(--muted);font-size:12px;text-align:center;position:relative}.video-preview-box.clickable{cursor:pointer;border-style:solid;border-color:rgba(86,168,255,.42)}.video-preview-box img,.video-preview-box video{width:100%;height:100%;display:block;object-fit:contain;background:#050b15}.video-preview-box video{min-height:220px}.play-overlay{position:absolute;inset:0;display:grid;place-items:center;background:linear-gradient(180deg,rgba(5,12,24,.08),rgba(5,12,24,.48));pointer-events:none}.play-button{width:66px;height:66px;border-radius:50%;display:grid;place-items:center;background:rgba(86,168,255,.86);box-shadow:0 14px 36px rgba(0,0,0,.42);color:white;font-size:30px;line-height:1;transform:translateY(-2px)}.video-item{all:unset;cursor:pointer;display:grid;gap:5px;padding:11px 12px;border-radius:15px;border:1px solid var(--line);background:rgba(5,12,24,.42)}.video-item.active{border-color:rgba(86,168,255,.75);background:rgba(86,168,255,.16)}.video-item.done{border-color:rgba(48,210,135,.38)}.video-item b{font-size:13px;color:#edf7ff;word-break:break-all}.video-item span{font-size:12px;color:var(--muted);word-break:break-all}.current-video{display:grid;gap:8px;padding:12px 14px;border-radius:18px;background:rgba(86,168,255,.12);border:1px solid rgba(86,168,255,.24);margin-bottom:14px}.current-video b{word-break:break-all}.label-config{display:grid;grid-template-columns:repeat(12,1fr);gap:14px}.label-config .field{grid-column:span 6}.label-config .field.sm{grid-column:span 3}.label-config .field.full{grid-column:1/-1}.quick-help{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:14px}.quick-help div{padding:10px;border-radius:14px;background:rgba(0,0,0,.18);border:1px solid var(--line);font-size:12px;color:var(--muted)}.quick-help b{display:block;color:#e6f2ff;margin-bottom:3px}@media(max-width:1100px){.label-workspace{grid-template-columns:1fr}.quick-help{grid-template-columns:repeat(2,1fr)}}@media(max-width:980px){.hero,.layout{grid-template-columns:1fr}.side{position:static}.field,.field.sm,.label-config .field,.label-config .field.sm{grid-column:1/-1}h1{font-size:32px}}.label-studio{margin-top:18px}.label-studio[hidden]{display:none}.label-stage{position:relative;background:#030813;border:1px solid var(--line);border-radius:20px;overflow:hidden;min-height:300px;display:grid;place-items:center}.label-stage img{display:block;width:100%;max-height:650px;object-fit:contain;user-select:none}.label-stage canvas{position:absolute;inset:0;width:100%;height:100%;margin:0;border:0;background:transparent;touch-action:none;cursor:crosshair}.label-stage.empty-stage{color:var(--muted);padding:28px;text-align:center}.label-studio-grid{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:16px}.label-status{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}.label-status span{padding:7px 10px;border-radius:999px;background:rgba(86,168,255,.12);border:1px solid rgba(86,168,255,.24);font-size:12px;color:#dcecff}.label-object-list{display:grid;gap:8px;max-height:360px;overflow:auto}.label-object{all:unset;cursor:pointer;display:flex;justify-content:space-between;gap:8px;padding:11px;border:1px solid var(--line);border-radius:14px;background:rgba(5,12,24,.42);font-size:12px}.label-object.active{border-color:rgba(86,168,255,.8);background:rgba(86,168,255,.17)}.label-object.lost{border-color:rgba(255,102,120,.55);color:#ffd7dd}.label-object span{color:var(--muted)}.label-help{font-size:12px;color:var(--muted);line-height:1.65;margin-top:12px}@media(max-width:980px){.label-studio-grid{grid-template-columns:1fr}}
 .onboarding{display:grid;gap:14px;margin:16px 0 18px;padding:17px;border-radius:20px;background:linear-gradient(135deg,rgba(86,168,255,.13),rgba(48,210,135,.07));border:1px solid rgba(86,168,255,.28)}.onboarding-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;flex-wrap:wrap}.onboarding-head b{font-size:17px}.onboarding-head span{display:block;color:var(--muted);font-size:12px;margin-top:5px}.preset-row{display:flex;gap:9px;flex-wrap:wrap}.preset{all:unset;cursor:pointer;padding:9px 13px;border-radius:13px;border:1px solid var(--line);background:rgba(5,12,24,.45);font-size:13px}.preset:hover{border-color:rgba(86,168,255,.65);background:rgba(86,168,255,.12)}.readiness{display:grid;gap:9px;margin:14px 0 18px}.readiness[hidden]{display:none}.check-item{display:grid;grid-template-columns:24px minmax(110px,170px) 1fr;gap:10px;align-items:start;padding:11px 13px;border-radius:15px;border:1px solid var(--line);background:rgba(5,12,24,.42);font-size:13px}.check-icon{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;font-weight:800}.check-item.ok .check-icon{background:rgba(48,210,135,.18);color:#8ff0bd}.check-item.warn .check-icon{background:rgba(255,189,90,.18);color:#ffd38f}.check-item.error .check-icon{background:rgba(255,102,120,.18);color:#ff9cab}.check-detail{color:var(--muted);overflow-wrap:anywhere}.advanced-toggle{color:#cde4ff}.advanced-setting{transition:.2s}body:not(.show-advanced) .advanced-setting{display:none}.last-error{margin-top:10px;padding:10px;border-radius:12px;background:rgba(255,102,120,.12);border:1px solid rgba(255,102,120,.28);color:#ffd7dd;font-size:12px;line-height:1.5;overflow-wrap:anywhere}.eyebrow.offline{color:#ffd7dd;background:rgba(255,102,120,.12);border-color:rgba(255,102,120,.3)}.btn[disabled],.preset[disabled]{opacity:.5;cursor:not-allowed}.field-note{display:flex;justify-content:space-between;gap:8px;align-items:center}.field-note .mini{margin-top:0}@media(max-width:680px){.check-item{grid-template-columns:24px 1fr}.check-detail{grid-column:2}.onboarding-head{display:grid}.preset-row{display:grid;grid-template-columns:1fr 1fr}.preset{display:block;text-align:center}}
-/* MyAutoTrain Team light theme */
+/* MyAutoTrain light theme */
 :root{--bg:#fff8f8;--panel:#ffffff;--panel2:#fff2f2;--text:#302525;--muted:#806e6e;--line:#eedddd;--blue:#e53935;--green:#27a66b;--purple:#ef6b68;--orange:#e88935;--red:#dc2f2f;--shadow:0 16px 42px rgba(126,43,43,.10)}
 body{color:var(--text);background:radial-gradient(circle at 88% 0,#ffe4e4 0,transparent 30%),linear-gradient(180deg,#fffafa,#fff4f4);font-size:14px}.wrap{width:min(1240px,calc(100% - 32px));padding:22px 0 32px}.hero{grid-template-columns:1fr;margin-bottom:16px}.card{background:var(--panel);border-color:var(--line);box-shadow:var(--shadow);border-radius:20px;backdrop-filter:none}.title{padding:24px 26px}.guide{padding:14px}.steps{grid-template-columns:repeat(3,1fr)}.step{padding:12px;background:#fffafa;border-color:var(--line);border-radius:14px}.num{border-radius:10px;color:#fff;background:linear-gradient(135deg,#e53935,#f06a66)}h1{font-size:36px;margin:14px 0 8px;color:#291f1f}.subtitle,.hint,.mini,.step span{color:var(--muted)}.eyebrow{color:#b32424;background:#fff0f0;border-color:#f3cccc}.eyebrow .dot{background:#e53935;box-shadow:0 0 0 4px #ffe2e2}.layout{grid-template-columns:220px 1fr;gap:16px}.side{padding:12px}.nav{gap:6px}.nav button{padding:13px 14px;border-radius:13px}.nav button:hover{background:#fff5f5;color:#5d4141}.nav button.active{color:#b82121;background:#fff0f0;border-color:#f0cccc}.nav button span{font-size:11px;color:#bca4a4}.status{background:#fffafa;border-color:var(--line);border-radius:14px}.pill.idle{color:#825f5f;background:#fff}.pill.run{color:#137a4c;background:#effaf4;border-color:#bce7cf}.pill.run .dot{background:#27a66b}.section{padding:22px}.section h2{color:#2d2222}.onboarding{background:linear-gradient(135deg,#fff0f0,#fffafa);border-color:#f0cccc;border-radius:16px}.preset{color:#674b4b;background:#fff;border-color:#e9d4d4}.preset:hover{color:#b82121;border-color:#e9a9a9;background:#fff3f3}.advanced-toggle{color:#b82121}label{color:#5f4848;font-weight:650}input,select{color:#352828;background:#fff;border-color:#e7d4d4;border-radius:12px}input:focus,select:focus{border-color:#e45757;box-shadow:0 0 0 4px rgba(229,57,53,.10)}.choice span{color:#745e5e;background:#fff;border-color:#e8d7d7;border-radius:12px}.choice input:checked+span{color:#b82121;border-color:#e79a9a;background:#fff0f0}.btn{color:#5a4242;background:#fff;border-color:#e6d0d0;border-radius:12px}.btn:hover{background:#fff5f5}.btn.primary,.btn.green,.btn.blue{color:#fff;background:linear-gradient(135deg,#d92f2f,#ed625e);border:0}.btn.red{color:#bd2525;background:#fff;border-color:#e7a6a6}.progress-card,.panel{background:#fffafa;border-color:#eedddd;border-radius:16px}.metrics-grid div,.quick-help div{background:#fff;border-color:#eadada}.metrics-grid b,.quick-help b,.marker b,.video-item b{color:#3a2b2b}.bar{background:#f3e7e7;border-color:#ead4d4}.bar div{background:linear-gradient(90deg,#e53935,#f27a74)}.readiness .check-item{background:#fff;border-color:#eadada}.check-item.ok .check-icon{background:#eaf8f0;color:#168354}.check-item.warn .check-icon{background:#fff3e6;color:#b76a1e}.check-item.error .check-icon{background:#fff0f0;color:#c82d2d}.last-error{color:#b62929;background:#fff1f1;border-color:#efc5c5}.marker,.sample,.video-item,.label-object{background:#fff;border-color:#eadada}.sample .delete{color:#b62929;background:#fff1f1;border-color:#efc5c5}.empty{border-color:#e4cfcf}.cmd,.log{color:#5d3c3c;background:#fffafa;border-color:#e7d3d3}.toast{color:#fff;background:#b82d2d;border-color:#a52424}.current-video,.label-status span{color:#9f2727;background:#fff0f0;border-color:#efcaca}.video-preview-box{color:var(--muted);background:#fffafa;border-color:#e8d5d5}.play-button{background:#e53935;box-shadow:0 12px 28px rgba(152,32,32,.25)}.progress-head b,.panel h3{color:#392a2a}.label-stage{border-color:#e4d0d0}.field.full>.onboarding{margin-bottom:0}@media(max-width:980px){.steps{grid-template-columns:1fr}.layout{grid-template-columns:1fr}.side{position:static}.nav{grid-template-columns:repeat(3,1fr)}.nav button{justify-content:center;gap:7px}.status{margin-top:10px}}@media(max-width:620px){.nav{grid-template-columns:1fr 1fr}.wrap{width:min(100% - 20px,1240px)}h1{font-size:29px}.metrics-grid{grid-template-columns:repeat(2,1fr)}}
 </style>
@@ -2481,7 +2624,7 @@ body{color:var(--text);background:radial-gradient(circle at 88% 0,#ffe4e4 0,tran
         <button data-tab="dataset">准备数据 <span>02</span></button>
         <button data-tab="test">测试模型 <span>03</span></button>
         <button data-tab="label">辅助标注 <span>04</span></button>
-        <button data-tab="convert" class="advanced-setting">设备转换 <span>05</span></button>
+        <button data-tab="convert">部署与导出 <span>05</span></button>
         <button data-tab="logs">运行记录 <span>06</span></button>
 
       </div>
@@ -2606,7 +2749,7 @@ body{color:var(--text);background:radial-gradient(circle at 88% 0,#ffe4e4 0,tran
         </div>
         <div id="raw-dataset-summary" class="readiness" hidden></div>
         <div class="grid">
-          <div class="field full"><label>原始数据集根目录</label><div class="input-action"><input id="raw_dataset_root" placeholder="例如 C:/Users/Rainy/Downloads/moxin"><button class="btn" onclick="pickRawDatasetRoot()">选择文件夹</button></div></div>
+          <div class="field full"><label>原始数据集根目录</label><div class="input-action"><input id="raw_dataset_root" placeholder="例如 C:/Users/YourName/Downloads/dataset"><button class="btn" onclick="pickRawDatasetRoot()">选择文件夹</button></div></div>
           <div class="field"><label>图片目录（可自动识别）</label><input id="raw_images_dir" placeholder="例如 .../moxin/Main"></div>
           <div class="field"><label>YOLO TXT 标签目录（可自动识别）</label><input id="raw_labels_dir" placeholder="例如 .../moxin/Main_labels"></div>
           <div class="field full"><label>转换输出目录</label><input id="raw_output_dir" placeholder="留空则输出到原始目录/converted_voc"></div>
@@ -2620,18 +2763,34 @@ body{color:var(--text);background:radial-gradient(circle at 88% 0,#ffe4e4 0,tran
       </section>
 
       <section id="tab-convert" class="tab card section">
-        <h2>模型转换</h2><p class="hint">训练结束后路径会自动回填。也可以手动填写已有 ONNX、classes.txt 和校准图片目录。</p>
+        <h2>多平台部署与导出</h2><p class="hint">训练结束后会自动填入 best.pt。先选择目标设备，再生成适合该平台的模型和部署清单；厂商专用工具链与训练环境相互隔离。</p>
         <div class="grid">
-          <div class="field full"><label>ONNX Model</label><input id="model_path"></div>
-          <div class="field"><label>Classes</label><input id="classes_path"></div>
-          <div class="field"><label>Calib Images</label><input id="calib_dir"></div>
-          <div class="field"><label>Test Image</label><input id="test_image"></div>
-          <div class="field"><label>VM User</label><input id="vm_user"></div>
-          <div class="field"><label>VM Host/IP</label><input id="vm_host"></div>
-          <div class="field full"><label>VM Work Dir</label><input id="vm_work_dir"></div>
-          <div class="field full"><div class="choice"><label><input id="skip_vm_convert" type="checkbox"><span>只上传转换包，跳过 VM 转换</span></label></div></div>
+          <div class="field full"><label>训练模型（.pt 或已有 .onnx）</label><div class="input-action"><input id="deploy_model" placeholder="训练完成后自动填入 best.pt"><button class="btn" onclick="pickDeployModel()">选择模型</button></div></div>
+          <div class="field"><label>目标平台</label><select id="deployment_target" onchange="updateDeploymentProfile()"><option value="generic_onnx">通用平台 / ONNX Runtime</option><option value="raspberry_pi">树莓派（CPU）</option><option value="rockchip_rknn">香橙派 / Rockchip RKNN</option><option value="drobotics_rdk">地瓜机器人 RDK X3 / X5</option><option value="maixcam">Sipeed MaixCAM</option><option value="nvidia_jetson">NVIDIA Jetson / TensorRT</option><option value="intel_openvino">Intel / OpenVINO</option></select></div>
+          <div class="field"><label>导出格式</label><select id="export_format"><option value="auto">自动推荐</option><option value="onnx">ONNX</option><option value="ncnn">NCNN</option><option value="openvino">OpenVINO</option><option value="engine">TensorRT engine</option><option value="rknn">RKNN</option></select></div>
+          <div class="field"><label>目标芯片（可选）</label><input id="export_chip" placeholder="例如 rk3588、x5"></div>
+          <div class="field"><label>data.yaml（INT8 时必填）</label><input id="export_data" placeholder="代表性校准数据"></div>
+          <div class="field full"><label>输出目录</label><div class="input-action"><input id="export_output_dir"><button class="btn" onclick="pickDeployOutputDir()">选择文件夹</button></div></div>
+          <div class="field full"><div class="choice"><label><input id="export_int8" type="checkbox"><span>INT8 量化（需要 data.yaml；部署前必须复测精度）</span></label></div></div>
         </div>
-        <div class="actions"><div class="btns"><button class="btn" onclick="runAction('vm_ssh')">测试 VM SSH</button><button class="btn" onclick="copyCommand('convert')">复制转换命令</button><button class="btn" onclick="saveDefaults('模型转换')">存为默认</button></div><button class="btn blue" onclick="runAction('convert')">开始转换</button></div>
+        <div id="deployment-profile-note" class="check-list"></div>
+        <div class="actions"><div class="btns"><button class="btn" onclick="copyCommand('export')">复制导出命令</button><button class="btn" onclick="saveDefaults('部署设置')">存为默认</button></div><button class="btn blue" onclick="runAction('export')">生成部署模型</button></div>
+        <div class="cmd" id="cmd-export"></div>
+
+        <div class="advanced-setting" style="margin-top:28px">
+          <h2>MaixCAM 专用转换（兼容旧流程）</h2><p class="hint">仅在需要 .cvimodel + .mud 时使用。其他平台不要填写此区域。</p>
+          <div class="grid">
+            <div class="field full"><label>ONNX Model</label><input id="model_path"></div>
+            <div class="field"><label>Classes</label><input id="classes_path"></div>
+            <div class="field"><label>Calib Images</label><input id="calib_dir"></div>
+            <div class="field"><label>Test Image</label><input id="test_image"></div>
+            <div class="field"><label>VM User</label><input id="vm_user"></div>
+            <div class="field"><label>VM Host/IP</label><input id="vm_host"></div>
+            <div class="field full"><label>VM Work Dir</label><input id="vm_work_dir"></div>
+            <div class="field full"><div class="choice"><label><input id="skip_vm_convert" type="checkbox"><span>只上传转换包，跳过 VM 转换</span></label></div></div>
+          </div>
+          <div class="actions"><div class="btns"><button class="btn" onclick="runAction('vm_ssh')">测试 VM SSH</button><button class="btn" onclick="copyCommand('convert')">复制 MaixCAM 命令</button></div><button class="btn" onclick="runAction('convert')">运行 MaixCAM 转换</button></div>
+        </div>
         <div class="cmd" id="cmd-convert"></div>
       </section>
 
@@ -2651,7 +2810,7 @@ body{color:var(--text);background:radial-gradient(circle at 88% 0,#ffe4e4 0,tran
       </section>
 
       <section id="tab-label" class="tab card section">
-        <h2>自动跟踪标注</h2><p class="hint">支持连续视频或按文件名排序的图片集（适用于自行提取、筛选的视频帧）。图片集模式直接为原图生成同名 XML，不会复制或重编码图片；应保持图片顺序与视频时间顺序一致。</p>
+        <h2>半自动标注（需人工复核）</h2><p class="hint">跟踪只负责把上一帧的框带到下一帧，不替代人工检查。位置、尺寸或匹配质量异常时会立即暂停，并且不会把缺少目标的帧静默保存。</p>
         <div class="grid">
           <div class="field full"><label>标注来源</label><div class="choice"><label><input name="label_source_type" type="radio" value="video"><span>视频</span></label><label><input name="label_source_type" type="radio" value="camera"><span>摄像头</span></label><label><input name="label_source_type" type="radio" value="images"><span>图片集</span></label></div></div>
         </div>
@@ -2678,7 +2837,7 @@ body{color:var(--text);background:radial-gradient(circle at 88% 0,#ffe4e4 0,tran
                 <div class="field"><label>Filename Prefix</label><input id="label_prefix"></div>
                 <div class="field"><label>Images Dir</label><input id="label_images_dir"></div>
                 <div class="field"><label>Annotations Dir</label><input id="label_annotations_dir"></div>
-                <div class="field"><label>Tracker</label><select id="label_tracker"><option value="csrt">CSRT</option><option value="kcf">KCF</option><option value="mosse">MOSSE</option><option value="mil">MIL</option><option value="template">Template</option><option value="multi_template">Multi-template（多角度）</option></select></div>
+                <div class="field"><label>跟踪策略</label><select id="label_tracker"><option value="csrt">稳健跟踪（推荐，较慢）</option><option value="kcf">快速跟踪（画面稳定）</option><option value="template">兼容模式（无需额外跟踪器）</option><option value="multi_template">多视角实验模式</option></select></div>
 
                 <div class="field sm"><label>Save Every N Frames</label><input id="label_interval"></div>
                 <div class="field sm"><label>Start Frame</label><input id="label_start_frame"></div>
@@ -2692,14 +2851,14 @@ body{color:var(--text);background:radial-gradient(circle at 88% 0,#ffe4e4 0,tran
         <div id="label-camera-source" class="label-source" hidden>
           <div class="panel">
             <h3>摄像头实时标注</h3>
-            <p class="hint">启动后会打开本机 OpenCV 标注窗口。确认实时画面后框选目标并选择类别，跟踪过程中会按保存间隔写入 JPEG 和同名 VOC XML；按 q 或 Esc 结束采集。</p>
+            <p class="hint">启动后在网页画面框选目标。跟踪过程中按保存间隔写入 JPEG 和同名 VOC XML；发现丢失或漂移时会暂停，修正后再继续。</p>
             <div class="label-config">
               <div class="field"><label>Camera Index</label><input id="label_camera_index" placeholder="0"></div>
               <div class="field"><label>Labels</label><input id="label_name_camera" placeholder="多个标签用英文逗号分隔，如 w,person,car"></div>
               <div class="field"><label>Filename Prefix</label><input id="label_prefix_camera" placeholder="camera"></div>
               <div class="field"><label>Images Dir</label><input id="label_images_dir_camera"></div>
               <div class="field"><label>Annotations Dir</label><input id="label_annotations_dir_camera"></div>
-              <div class="field"><label>Tracker</label><select id="label_tracker_camera"><option value="csrt">CSRT</option><option value="kcf">KCF</option><option value="mosse">MOSSE</option><option value="mil">MIL</option><option value="template">Template</option><option value="multi_template">Multi-template（多角度）</option></select></div>
+              <div class="field"><label>跟踪策略</label><select id="label_tracker_camera"><option value="csrt">稳健跟踪（推荐，较慢）</option><option value="kcf">快速跟踪（画面稳定）</option><option value="template">兼容模式（无需额外跟踪器）</option><option value="multi_template">多视角实验模式</option></select></div>
               <div class="field sm"><label>Save Every N Frames</label><input id="label_interval_camera"></div>
               <div class="field sm"><label>Max Frames</label><input id="label_max_frames_camera" placeholder="0 为持续采集"></div>
               <div class="field sm"><label>Display Scale</label><input id="label_display_scale_camera"></div>
@@ -2715,13 +2874,13 @@ body{color:var(--text);background:radial-gradient(circle at 88% 0,#ffe4e4 0,tran
               <div class="field full"><label>图片集文件夹</label><div class="input-action"><input id="label_images_input_dir" placeholder="例如 E:/datasets/selected_frames（支持 jpg、png、bmp、webp）"><button class="btn" onclick="pickLabelImagesDir()">选择文件夹</button></div></div>
               <div class="field"><label>Labels</label><input id="label_name_images" placeholder="多个标签用英文逗号分隔，如 w,person,car"></div>
               <div class="field"><label>Annotations Dir</label><input id="label_annotations_dir_images"></div>
-              <div class="field"><label>Tracker</label><select id="label_tracker_images"><option value="csrt">CSRT</option><option value="kcf">KCF</option><option value="mosse">MOSSE</option><option value="mil">MIL</option><option value="template">Template</option><option value="multi_template">Multi-template（多角度）</option></select></div>
+              <div class="field"><label>跟踪策略</label><select id="label_tracker_images"><option value="csrt">稳健跟踪（推荐，较慢）</option><option value="kcf">快速跟踪（画面稳定）</option><option value="template">兼容模式（无需额外跟踪器）</option><option value="multi_template">多视角实验模式</option></select></div>
               <div class="field sm"><label>每 N 张保存</label><input id="label_interval_images"></div>
               <div class="field sm"><label>起始图片序号</label><input id="label_start_frame_images"></div>
               <div class="field sm"><label>最多处理图片</label><input id="label_max_frames_images"></div>
               <div class="field sm"><label>显示缩放</label><input id="label_display_scale_images"></div>
             </div>
-            <div class="quick-help"><div><b>1. 选择图片集</b>选择已筛选并按时间顺序命名的帧图片。</div><div><b>2. 开始标注</b>在首张图片框选目标并选择类别。</div><div><b>3. 修正跟踪</b>目标丢失后按 r 修正当前框。</div><div><b>4. 保存结果</b>每张原图对应同名 XML，原图不会被删除。</div></div>
+            <div class="quick-help"><div><b>1. 选择图片集</b>选择已筛选并按时间顺序命名的帧图片。</div><div><b>2. 添加首帧框</b>在首张图片拖动框选目标并选择类别。</div><div><b>3. 逐段复核</b>播放几帧后暂停检查；异常时选中目标并点“修正选中框”。</div><div><b>4. 保存结果</b>只保存所有目标都有效的帧，每张原图对应同名 XML。</div></div>
           </div>
         </div>
         <div id="label-browser-studio" class="label-studio panel" hidden>
@@ -2731,12 +2890,12 @@ body{color:var(--text);background:radial-gradient(circle at 88% 0,#ffe4e4 0,tran
               <div id="label-stage" class="label-stage empty-stage"><span>选择来源并点击“在网页中开始标注”后，此处显示实时画面。</span><img id="label-frame-image" hidden alt="当前标注画面"><canvas id="label-frame-canvas" hidden></canvas></div>
               <div id="label-session-status" class="label-status"></div>
               <div class="actions"><div class="btns"><button class="btn green" id="label-play-button" onclick="toggleBrowserLabelPlay()">播放跟踪</button><button class="btn" onclick="advanceBrowserLabelFrame()">下一帧</button><button class="btn" onclick="saveBrowserLabelFrame()">保存当前帧</button></div><div class="btns"><button class="btn" onclick="setLabelDrawMode('add')">添加框</button><button class="btn" onclick="setLabelDrawMode('edit')">修正选中框</button><button class="btn" onclick="setLabelDrawMode('sample')">追加选中目标视角</button><button class="btn red" onclick="deleteBrowserLabelObject()">删除选中框</button></div></div>
-              <div class="label-help">多角度模式：选择 Multi-template，暂停到新角度后选中目标，点击“追加选中目标视角”并重画该目标。它会保留已有参考图；“修正选中框”会重置参考图。</div>
+              <div class="label-help">建议每推进一小段就暂停抽查。红框或低质量提示不会自动保存；请选中目标后点“修正选中框”。多视角模式仍属实验功能，适合外观变化明显且背景较稳定的目标。</div>
             </div>
             <div class="panel"><h3>当前目标</h3><div id="label-object-list" class="label-object-list"><div class="empty">尚未框选目标。</div></div></div>
           </div>
         </div>
-        <div class="actions"><div class="btns"><button class="btn" onclick="copyCommand('label')">复制当前命令</button><button class="btn" onclick="saveDefaults('自动跟踪标注')">存为默认</button></div><div class="btns"><button class="btn" onclick="loadLabelResults()">刷新标注结果</button><button class="btn primary" id="label-start-button" onclick="runLabelCurrent()">在网页中开始标注</button></div></div>
+        <div class="actions"><div class="btns"><button class="btn advanced-setting" onclick="copyCommand('label')">复制兼容命令</button><button class="btn" onclick="saveDefaults('半自动标注')">存为默认</button></div><div class="btns"><button class="btn" onclick="loadLabelResults()">刷新标注结果</button><button class="btn primary" id="label-start-button" onclick="runLabelCurrent()">在网页中开始标注</button></div></div>
         <div class="cmd" id="cmd-label"></div>
         <h2 style="margin-top:24px">标注结果</h2><p class="hint">这里显示当前标注样本。视频模式下“删除废图”会同时删除导出图片和 XML；图片集模式下仅删除 XML，保留用户原始图片。</p>
         <div id="label-results" class="gallery"></div>
@@ -2755,11 +2914,12 @@ body{color:var(--text);background:radial-gradient(circle at 88% 0,#ffe4e4 0,tran
 </div>
 <div class="toast" id="toast"></div>
 <script>
-const fields=['dataset_root','train_task','train_images_dir','train_annotations_dir','prepared_dataset_yaml','train_ratio_percent','img_width','img_height','image_resize_mode','epochs','batch','train_workers','patience','lr0','conda_env','base_model','torch_cuda','train_cache','raw_dataset_root','raw_images_dir','raw_labels_dir','raw_output_dir','raw_class_names','project_name','model_name','remote_train_user','remote_train_host','remote_train_port','remote_train_work_dir','model_path','classes_path','calib_dir','test_image','vm_user','vm_host','vm_work_dir','test_model','test_image_file','test_image_folder','test_output_dir','camera_index','conf','label_video_dir','label_video','label_camera_index','label_source_type','label_images_input_dir','label_name','label_interval','label_images_dir','label_annotations_dir','label_prefix','label_tracker','label_start_frame','label_max_frames','label_display_scale','label_jpeg_quality'];
+const fields=['dataset_root','train_task','train_images_dir','train_annotations_dir','prepared_dataset_yaml','train_ratio_percent','img_width','img_height','image_resize_mode','epochs','batch','train_workers','patience','lr0','conda_env','base_model','torch_cuda','train_cache','raw_dataset_root','raw_images_dir','raw_labels_dir','raw_output_dir','raw_class_names','project_name','model_name','remote_train_user','remote_train_host','remote_train_port','remote_train_work_dir','deploy_model','deployment_target','export_format','export_chip','export_output_dir','export_data','model_path','classes_path','calib_dir','test_image','vm_user','vm_host','vm_work_dir','test_model','test_image_file','test_image_folder','test_output_dir','camera_index','conf','label_video_dir','label_video','label_camera_index','label_source_type','label_images_input_dir','label_name','label_interval','label_images_dir','label_annotations_dir','label_prefix','label_tracker','label_start_frame','label_max_frames','label_display_scale','label_jpeg_quality'];
 
 
 
 let values={};
+let deploymentProfiles=[];
 let labelVideos=[];
 let labelVideoIndex=-1;
 let labelVisibleCount=150;
@@ -2780,14 +2940,16 @@ function drawChart(id,history,series){const canvas=document.getElementById(id); 
 function updateTrainProgress(p){p=p||{}; const task=p.task||document.querySelector('input[name="train_task"]:checked')?.value||'detect'; const classify=task==='classify'; const pct=Math.max(0,Math.min(100,Number(p.percent||0))); const totalEpochs=Number(p.total_epochs||0); const epoch=Number(p.epoch||0); const totalBatches=Number(p.total_batches||0); const batch=Number(p.batch||0); const phaseMap={idle:'等待开始',pending:'准备训练',train:'训练中',val:'验证中',metrics:'指标已更新',export:'正在停止训练并导出'}; setText('train-phase',`${phaseMap[p.phase]||p.phase||'等待开始'}${p.updated_at?' · '+p.updated_at:''}`); const bar=document.getElementById('epoch-bar'); if(bar) bar.style.width=pct+'%'; setText('epoch-text',epoch&&totalEpochs?`${epoch}/${totalEpochs}`:'-'); setText('batch-text',totalBatches?`${batch}/${totalBatches} (${fmt(pct,1)}%)`:'-'); setText('gpu-text',p.gpu_mem||'-'); const speedNumber=parseFloat(String(p.speed||'')); const configuredBatch=Math.max(1,Number(values.batch||1)); setText('speed-text',Number.isFinite(speedNumber)?`${p.speed} · ≈${fmt(speedNumber*configuredBatch,1)}图/秒`:(p.speed||'-')); setText('elapsed-text',p.elapsed||'-'); setText('eta-text',p.eta||'-'); const lossItem=document.getElementById('loss-item'); const boxItem=document.getElementById('box-loss-item'); const clsItem=document.getElementById('cls-loss-item'); const dflItem=document.getElementById('dfl-loss-item'); if(lossItem) lossItem.hidden=!classify; if(boxItem) boxItem.hidden=classify; if(clsItem) clsItem.hidden=classify; if(dflItem) dflItem.hidden=classify; setText('loss-title',classify?'分类训练损失':'检测训练损失'); setText('loss-value',fmt(p.loss)); setText('box-loss',fmt(p.box_loss)); setText('cls-loss',fmt(p.cls_loss)); setText('dfl-loss',fmt(p.dfl_loss)); const detectMetrics=document.getElementById('detect-metrics'); const classifyMetrics=document.getElementById('classify-metrics'); if(detectMetrics) detectMetrics.hidden=classify; if(classifyMetrics) classifyMetrics.hidden=!classify; const m=p.metrics||{}; setText('val-text',p.val_total?`${p.val_batch||0}/${p.val_total} (${fmt(p.val_percent||0,1)}%)`:'-'); setText('precision-text',fmt(m.precision)); setText('recall-text',fmt(m.recall)); setText('map50-text',fmt(m.map50)); setText('map5095-text',fmt(m.map50_95)); setText('top1-text',fmt(m.top1_acc)); setText('top5-text',fmt(m.top5_acc)); const lossSeries=classify?[{key:'loss',label:'loss',color:'#dc7a32'}]:[{key:'box_loss',label:'box',color:'#d92f2f'},{key:'cls_loss',label:'cls',color:'#ef6b68'},{key:'dfl_loss',label:'dfl',color:'#a64f4f'}]; const metricSeries=classify?[{key:'top1_acc',label:'Top-1',color:'#21885a'},{key:'top5_acc',label:'Top-5',color:'#d92f2f'}]:[{key:'precision',label:'P',color:'#21885a'},{key:'recall',label:'R',color:'#d92f2f'},{key:'map50',label:'mAP50',color:'#dc7a32'},{key:'map50_95',label:'mAP50-95',color:'#a64f4f'}]; drawChart('loss-chart',p.history||[],lossSeries); drawChart('metric-chart',p.history||[],metricSeries)}
 function updatePreparedDatasetUI(){const active=!!String(values.prepared_dataset_yaml||'').trim(); const banner=document.getElementById('prepared-dataset-banner'); const annotations=document.getElementById('annotations-field'); const split=document.getElementById('train_ratio_percent')?.closest('.field'); if(banner){banner.hidden=!active; banner.innerHTML=active?`<div class="check-item ok"><span class="check-icon">✓</span><b>已直接导入 YOLO 数据集</b><span class="check-detail">${values.prepared_dataset_yaml}；沿用原 train / valid / test，不需要 XML，也不会重新随机划分。</span></div>`:''} if(annotations) annotations.hidden=active||(document.querySelector('input[name="train_task"]:checked')?.value||'detect')==='classify'; if(split) split.hidden=active||!document.body.classList.contains('show-advanced')}
 function updateTrainTaskUI(){const task=document.querySelector('input[name="train_task"]:checked')?.value||'detect'; const annotations=document.getElementById('annotations-field'); const hint=document.getElementById('train-task-hint'); const prepared=!!String(values.prepared_dataset_yaml||'').trim(); if(annotations) annotations.hidden=task==='classify'||prepared; if(hint) hint.textContent=task==='classify'?'分类数据集结构：Images Dir/类别名/图片。每个类别至少 2 张图片；Annotations Dir 不参与分类训练；Base Model 请使用分类权重，例如 yolo11n-cls.pt。':prepared?'已导入标准 YOLO 数据集，将直接使用 TXT 标签和原始 train/valid/test 划分。':'检测数据集结构：可直接导入 data.yaml 数据集，或使用同名图片 + VOC XML。'; updatePreparedDatasetUI()}
+async function loadDeviceProfiles(){try{const r=await fetch('/api/device-profiles'); const j=await r.json(); deploymentProfiles=j.items||[]; updateDeploymentProfile()}catch(e){}}
+function updateDeploymentProfile(){const target=document.getElementById('deployment_target')?.value||values.deployment_target||'generic_onnx'; const profile=deploymentProfiles.find(item=>item.id===target); if(!profile) return; const format=document.getElementById('export_format'); if(format){for(const option of format.options) option.disabled=option.value!=='auto'&&!profile.formats.includes(option.value); if(format.selectedOptions[0]?.disabled) format.value='auto'} const chip=document.getElementById('export_chip'); if(chip) chip.placeholder=profile.chips?.length?`可选：${profile.chips.join('、')}；默认 ${profile.default_chip||profile.chips[0]}`:'该平台不需要填写'; const box=document.getElementById('deployment-profile-note'); if(box) box.innerHTML=`<div class="check-item ok"><span class="check-icon">✓</span><b>推荐 ${String(profile.recommended_format).toUpperCase()}</b><span class="check-detail">${profile.summary}</span></div><div class="check-item ${profile.vendor_toolchain?'warn':'ok'}"><span class="check-icon">${profile.vendor_toolchain?'!':'✓'}</span><b>${profile.vendor_toolchain?'需要设备厂商工具链':'可直接进入运行时验证'}</b><span class="check-detail">${profile.next_step}</span></div>`}
 function syncLabelFields(prefix,toCanonical){const pairs=prefix==='camera'?[['label_name_camera','label_name'],['label_prefix_camera','label_prefix'],['label_images_dir_camera','label_images_dir'],['label_annotations_dir_camera','label_annotations_dir'],['label_tracker_camera','label_tracker'],['label_interval_camera','label_interval'],['label_max_frames_camera','label_max_frames'],['label_display_scale_camera','label_display_scale'],['label_jpeg_quality_camera','label_jpeg_quality']]:[['label_name_images','label_name'],['label_annotations_dir_images','label_annotations_dir'],['label_tracker_images','label_tracker'],['label_interval_images','label_interval'],['label_start_frame_images','label_start_frame'],['label_max_frames_images','label_max_frames'],['label_display_scale_images','label_display_scale']]; for(const [sourceId,canonicalId] of pairs){const from=document.getElementById(toCanonical?sourceId:canonicalId); const to=document.getElementById(toCanonical?canonicalId:sourceId); if(from&&to) to.value=from.value}}
 function updateLabelSourceUI(){const source=document.querySelector('input[name="label_source_type"]:checked')?.value||'video'; const video=document.getElementById('label-video-source'); const camera=document.getElementById('label-camera-source'); const images=document.getElementById('label-images-source'); const start=document.getElementById('label-start-button'); if(video) video.hidden=source!=='video'; if(camera) camera.hidden=source!=='camera'; if(images) images.hidden=source!=='images'; if(source==='camera') syncLabelFields('camera',false); if(source==='images') syncLabelFields('images',false); if(start) start.textContent=source==='camera'?'在网页中开始摄像头标注':source==='images'?'在网页中开始图片集标注':'在网页中开始视频标注'}
-function collect(){const source=document.querySelector('input[name="label_source_type"]:checked')?.value||'video'; if(source==='camera') syncLabelFields('camera',true); if(source==='images') syncLabelFields('images',true); for(const id of fields){const el=document.getElementById(id); if(el) values[id]=el.value} values.skip_vm_convert=document.getElementById('skip_vm_convert').checked; values.raw_overwrite=!!document.getElementById('raw_overwrite')?.checked; for(const n of ['operator_mode','train_mode','train_device','train_task','test_source','label_source_type']){const el=document.querySelector(`input[name="${n}"]:checked`); if(el) values[n]=el.value} return values}
+function collect(){const source=document.querySelector('input[name="label_source_type"]:checked')?.value||'video'; if(source==='camera') syncLabelFields('camera',true); if(source==='images') syncLabelFields('images',true); for(const id of fields){const el=document.getElementById(id); if(el) values[id]=el.value} values.skip_vm_convert=!!document.getElementById('skip_vm_convert')?.checked; values.export_int8=!!document.getElementById('export_int8')?.checked; values.raw_overwrite=!!document.getElementById('raw_overwrite')?.checked; for(const n of ['operator_mode','train_mode','train_device','train_task','test_source','label_source_type']){const el=document.querySelector(`input[name="${n}"]:checked`); if(el) values[n]=el.value} return values}
 function resourceEstimateKey(v){return [v.train_task||'detect',v.train_images_dir||'',v.base_model||'',v.img_width||'',v.img_height||'',v.image_resize_mode||'',v.batch||'',v.train_cache||'',v.train_device||''].join('|')}
 function showResourceEstimate(e){e=e||{}; setText('estimate-images',e.image_count!==undefined?`${e.image_count} 张`:'-'); setText('estimate-ram',e.ram_text||'-'); setText('estimate-vram',e.vram_text||'-'); setText('estimate-cache',e.cache_text||'-'); setText('estimate-imgsz',e.img_size||'-'); setText('estimate-batch',e.batch||'-'); const riskMap={safe:'资源预估',warning:'资源预估 · 警告',danger:'资源预估 · 风险'}; const model=e.model_size?` · YOLO-${e.model_size}`:''; setText('resource-note',`${riskMap[e.risk]||'资源预估'}${model} · cache=${e.cache_mode||'-'}`); setText('resource-detail',e.note||'估算值仅供参考，实际峰值会随模型、增强策略、驱动和环境波动。')}
 async function updateResourceEstimate(){try{const v=collect(); const key=resourceEstimateKey(v); if(key===lastResourceEstimateKey) return; lastResourceEstimateKey=key; setText('resource-note','正在估算...'); const j=await api('/api/train-estimate',{values:v}); showResourceEstimate(j.estimate||{})}catch(e){setText('resource-note','估算失败'); setText('resource-detail',e.message)}}
 function scheduleResourceEstimate(){clearTimeout(resourceEstimateTimer); resourceEstimateTimer=setTimeout(updateResourceEstimate,450)}
-function apply(v){const before=JSON.stringify(values); values={...values,...v}; for(const id of fields){const el=document.getElementById(id); if(el && document.activeElement!==el && values[id]!==undefined && el.value!==String(values[id])) el.value=values[id]} updateSplitRatio(); document.getElementById('skip_vm_convert').checked=!!values.skip_vm_convert; const rawOverwrite=document.getElementById('raw_overwrite'); if(rawOverwrite) rawOverwrite.checked=!!values.raw_overwrite; for(const n of ['operator_mode','train_mode','train_device','train_task','test_source','label_source_type']){if(values[n]!==undefined){const el=document.querySelector(`input[name="${n}"][value="${values[n]}"]`); if(el && document.activeElement!==el) el.checked=true}} updateTrainTaskUI(); updatePreparedDatasetUI(); updateLabelSourceUI(); updateCurrentVideo(); if(JSON.stringify(values)!==before) updateCommands(); scheduleResourceEstimate()}
+function apply(v){const before=JSON.stringify(values); values={...values,...v}; for(const id of fields){const el=document.getElementById(id); if(el && document.activeElement!==el && values[id]!==undefined && el.value!==String(values[id])) el.value=values[id]} updateSplitRatio(); const skipVm=document.getElementById('skip_vm_convert'); if(skipVm) skipVm.checked=!!values.skip_vm_convert; const exportInt8=document.getElementById('export_int8'); if(exportInt8) exportInt8.checked=!!values.export_int8; const rawOverwrite=document.getElementById('raw_overwrite'); if(rawOverwrite) rawOverwrite.checked=!!values.raw_overwrite; for(const n of ['operator_mode','train_mode','train_device','train_task','test_source','label_source_type']){if(values[n]!==undefined){const el=document.querySelector(`input[name="${n}"][value="${values[n]}"]`); if(el && document.activeElement!==el) el.checked=true}} updateTrainTaskUI(); updatePreparedDatasetUI(); updateLabelSourceUI(); updateDeploymentProfile(); updateCurrentVideo(); if(JSON.stringify(values)!==before) updateCommands(); scheduleResourceEstimate()}
 
 
 function setConnectionState(online){const badge=document.getElementById('connectionBadge'); if(!badge) return; badge.classList.toggle('offline',!online); const text=badge.querySelector('span:last-child'); if(text) text.textContent=online?'面板已连接 · 本机端口 8989':'面板连接已断开 · 请运行启动脚本'}
@@ -2796,7 +2958,7 @@ let valuesSaveQueue=Promise.resolve();
 function saveValues(){const snapshot={...collect()}; valuesSaveQueue=valuesSaveQueue.then(()=>api('/api/values',{values:snapshot})).catch(()=>{}); return valuesSaveQueue}
 async function saveDefaults(scope){const snapshot={...collect()}; try{await valuesSaveQueue; const j=await api('/api/defaults',{values:snapshot}); apply(j.values||{}); toast(`${scope||'当前配置'}已保存为默认`)}catch(e){toast(e.message)}}
 async function command(action){const j=await api('/api/command',{action,values:collect()}); return j.command}
-async function updateCommands(){try{document.getElementById('cmd-train').textContent=await command('train');document.getElementById('cmd-convert').textContent=await command('convert');document.getElementById('cmd-test').textContent=await command('test');document.getElementById('cmd-label').textContent=await command('label')}catch(e){}}
+async function updateCommands(){try{document.getElementById('cmd-train').textContent=await command('train');document.getElementById('cmd-export').textContent=await command('export');document.getElementById('cmd-convert').textContent=await command('convert');document.getElementById('cmd-test').textContent=await command('test');document.getElementById('cmd-label').textContent=await command('label')}catch(e){}}
 function setInputValue(id,value){const el=document.getElementById(id); if(el){el.value=value; values[id]=value}}
 function toggleAdvancedSettings(){const show=!document.body.classList.contains('show-advanced'); document.body.classList.toggle('show-advanced',show); localStorage.setItem('myAutoTrainAdvanced',show?'1':'0'); setText('advanced-toggle',show?'收起更多设置':'更多设置')}
 function applyTrainPreset(name){const task=document.querySelector('input[name="train_task"]:checked')?.value||'detect'; const recommendedBatch=String(values.batch||'16'),recommendedWorkers=String(values.train_workers||'4'); const presets={smoke:{epochs:'5',batch:'8',train_workers:'2',patience:'0',img_width:'640',img_height:'480',image_resize_mode:'letterbox',train_cache:'False'},camera4060:{epochs:'10000',batch:recommendedBatch,train_workers:recommendedWorkers,patience:'0',img_width:'640',img_height:'480',image_resize_mode:'letterbox',train_cache:'disk',lr0:'0.005'},balanced:{epochs:'100',batch:recommendedBatch,train_workers:recommendedWorkers,patience:'0',img_width:'640',img_height:'480',image_resize_mode:'letterbox',train_cache:'disk'},quality:{epochs:'10000',batch:recommendedBatch,train_workers:recommendedWorkers,patience:'0',img_width:'640',img_height:'480',image_resize_mode:'letterbox',train_cache:'disk'}}; const preset=presets[name]||presets.camera4060; for(const [key,value] of Object.entries(preset)) setInputValue(key,value); const model=document.getElementById('base_model'); if(model&&!model.value.trim()) setInputValue('base_model',task==='classify'?'yolo11n-cls.pt':'yolo11n.pt'); saveValues(); updateCommands(); scheduleResourceEstimate(); document.getElementById('train-readiness').hidden=true; toast(name==='smoke'?'已应用640×480首次验证配置':name==='camera4060'?'已应用本机推荐的640×480配置，由你手动停止':name==='quality'?'已应用640×480持续高质量配置，由你手动停止':'已应用推荐配置')}
@@ -2809,6 +2971,8 @@ async function inspectRawDataset(){try{const j=await api('/api/dataset-convert/i
 async function importRawDataset(){const button=document.getElementById('raw-import-button'); if(button){button.disabled=true;button.textContent='正在导入...'} try{const j=await api('/api/dataset-import/run',{values:collect()}); apply(j.values||{}); renderRawDatasetSummary(j.result||{},false); await saveValues(); updateCommands(); scheduleResourceEstimate(); toast('已直接导入，保留原数据划分且无需 XML')}catch(e){toast(e.message)}finally{if(button){button.disabled=false;button.textContent='直接导入训练配置'}}}
 async function convertRawDataset(){const button=document.getElementById('raw-convert-button'); if(button){button.disabled=true;button.textContent='正在转换...'} try{const j=await api('/api/dataset-convert/run',{values:collect()}); apply(j.values||{}); renderRawDatasetSummary(j.result||{},true); await saveValues(); updateCommands(); scheduleResourceEstimate(); toast('转换完成，训练目录已经自动填入')}catch(e){toast(e.message)}finally{if(button){button.disabled=false;button.textContent='转换并填入训练配置'}}}
 async function pickBaseModel(){try{const j=await api('/api/pick-base-model',{values:collect()}); if(j.path){setInputValue('base_model',j.path); await saveValues(); updateCommands(); scheduleResourceEstimate(); document.getElementById('train-readiness').hidden=true}else toast('未选择模型')}catch(e){toast(e.message)}}
+async function pickDeployModel(){try{const j=await api('/api/pick-deploy-model',{values:collect()}); if(j.path){setInputValue('deploy_model',j.path); await saveValues(); updateCommands()}else toast('未选择模型')}catch(e){toast(e.message)}}
+async function pickDeployOutputDir(){try{const j=await api('/api/pick-deploy-output-dir',{values:collect()}); if(j.path){setInputValue('export_output_dir',j.path); await saveValues(); updateCommands()}else toast('未选择文件夹')}catch(e){toast(e.message)}}
 function videoPrefix(video){return video.stem.replace(/[^\w\u4e00-\u9fa5-]+/g,'_').replace(/^_+|_+$/g,'')||'track'}
 function videoUrl(video,path='/api/video-file'){return `${path}?path=${encodeURIComponent(video.path)}&t=${Date.now()}`}
 function videoSizeText(video){const size=Number(video.size||0); if(!size) return ''; const units=['B','KB','MB','GB','TB']; let n=size,i=0; while(n>=1024&&i<units.length-1){n/=1024;i++} return `${n>=10||i===0?n.toFixed(0):n.toFixed(1)} ${units[i]}`}
@@ -2827,7 +2991,7 @@ async function pickLabelImagesDir(){try{const j=await api('/api/pick-label-image
 function selectNextVideo(){if(!labelVideos.length){toast('请先读取文件夹视频'); return} if(labelVideoIndex>=0&&labelVideos[labelVideoIndex]) labelVideos[labelVideoIndex].done=true; const next=Math.min(labelVideos.length-1,labelVideoIndex+1); selectLabelVideo(next); toast(next===labelVideos.length-1?'已到最后一个视频':'已切换到下一个视频')}
 
 function selectPrevVideo(){if(!labelVideos.length){toast('请先读取文件夹视频'); return} selectLabelVideo(Math.max(0,labelVideoIndex-1))}
-let labelSessionId=sessionStorage.getItem('maixcamLabelSessionId')||'';
+let labelSessionId=sessionStorage.getItem('myAutoTrainLabelSessionId')||sessionStorage.getItem('maixcamLabelSessionId')||'';
 let labelSessionState=null;
 let labelPlaying=false;
 let labelAdvanceBusy=false;
@@ -2838,7 +3002,17 @@ let labelDragStart=null;
 function labelFrameUrl(){return `/api/label-session/frame?session_id=${encodeURIComponent(labelSessionId)}&t=${Date.now()}`}
 function labelPalette(i){return ['#50dc78','#50b4ff','#e678ff','#ffbe46','#78dcff','#b4a0ff','#78ffd2','#ff8c8c'][i%8]}
 function showLabelStudio(show){const studio=document.getElementById('label-browser-studio'); if(studio) studio.hidden=!show}
-function renderLabelSession(){const state=labelSessionState; const status=document.getElementById('label-session-status'); const list=document.getElementById('label-object-list'); const tip=document.getElementById('label-session-tip'); if(!state||!status||!list) return; status.innerHTML=`<span>来源：${state.source_type==='camera'?'摄像头':state.source_type==='images'?'图片集':'视频'}</span><span>帧：${state.frame_index}${state.frame_count?'/'+Math.max(0,state.frame_count-1):''}</span><span>已保存：${state.saved}</span><span>间隔：${state.interval}</span><span>目标：${state.objects.filter(x=>x.ok).length}/${state.objects.length}</span>${state.ended?'<span>来源已结束</span>':''}${state.lost?'<span>跟踪丢失，请修正或删除</span>':''}`; if(tip) tip.textContent=state.lost?'跟踪丢失，已暂停播放；请选择目标后修正或删除。':'在画面上拖动鼠标绘制标注框。'; list.innerHTML=''; if(!state.objects.length){list.innerHTML='<div class="empty">尚未框选目标。点击“添加框”后在画面拖动鼠标。</div>'} else {state.objects.forEach((obj,index)=>{const item=document.createElement('button'); item.className='label-object'+(obj.id===labelActiveObjectId?' active':'')+(!obj.ok?' lost':''); item.innerHTML=`<b>#${obj.id} ${obj.label}${obj.ok?'':' · 已丢失'}</b><span>${obj.w} × ${obj.h} · 参考视角 ${obj.sample_count||1}</span>`; item.onclick=()=>{labelActiveObjectId=obj.id; renderLabelSession(); drawLabelCanvas()}; list.appendChild(item)})} const button=document.getElementById('label-play-button'); if(button) button.textContent=labelPlaying?'暂停跟踪':'播放跟踪'; drawLabelCanvas()}
+function renderLabelSession(){
+  const state=labelSessionState,status=document.getElementById('label-session-status'),list=document.getElementById('label-object-list'),tip=document.getElementById('label-session-tip');
+  if(!state||!status||!list) return;
+  const alertText=state.last_warning||((state.lost||false)?'跟踪异常，请修正或删除':''),autoText=state.last_auto_saved?'<span>本帧已自动保存</span>':'';
+  status.innerHTML=`<span>来源：${state.source_type==='camera'?'摄像头':state.source_type==='images'?'图片集':'视频'}</span><span>帧：${state.frame_index}${state.frame_count?'/'+Math.max(0,state.frame_count-1):''}</span><span>已保存：${state.saved}</span><span>待复核未保存：${state.review_skipped||0}</span><span>目标：${state.objects.filter(x=>x.ok).length}/${state.objects.length}</span>${autoText}${state.ended?'<span>来源已结束</span>':''}${alertText?`<span>${alertText}</span>`:''}`;
+  if(tip) tip.textContent=alertText?`${alertText} 已暂停播放。`:'拖动添加或修正目标框；建议每推进一小段就暂停抽查。';
+  list.innerHTML='';
+  if(!state.objects.length){list.innerHTML='<div class="empty">尚未框选目标。点击“添加框”后在画面拖动鼠标。</div>'}
+  else state.objects.forEach((obj,index)=>{const item=document.createElement('button'); const quality=Math.round(Number(obj.quality??1)*100); item.className='label-object'+(obj.id===labelActiveObjectId?' active':'')+(!obj.ok?' lost':''); item.innerHTML=`<b>#${obj.id} ${obj.label}${obj.ok?'':' · 需复核'}</b><span>${obj.w} × ${obj.h} · 质量 ${quality}% · 参考视角 ${obj.sample_count||1}${obj.warning?' · '+obj.warning:''}</span>`; item.onclick=()=>{labelActiveObjectId=obj.id; renderLabelSession(); drawLabelCanvas()}; list.appendChild(item)});
+  const button=document.getElementById('label-play-button'); if(button) button.textContent=labelPlaying?'暂停跟踪':'播放跟踪'; drawLabelCanvas();
+}
 
 function refreshLabelFrame(){const image=document.getElementById('label-frame-image'); const stage=document.getElementById('label-stage'); if(!image||!labelSessionId) return; image.hidden=false; stage?.classList.remove('empty-stage'); image.onload=()=>drawLabelCanvas(); image.src=labelFrameUrl()}
 function setupLabelCanvas(){const canvas=document.getElementById('label-frame-canvas'); if(!canvas||canvas.dataset.ready) return; canvas.dataset.ready='1'; canvas.hidden=false; canvas.addEventListener('pointerdown',event=>{if(!labelSessionState) return; const point=labelCanvasPoint(event); if(!point) return; labelDragStart=point; canvas.setPointerCapture(event.pointerId); drawLabelCanvas(point)}); canvas.addEventListener('pointermove',event=>{if(!labelDragStart) return; drawLabelCanvas(labelCanvasPoint(event))}); canvas.addEventListener('pointerup',async event=>{if(!labelDragStart) return; const end=labelCanvasPoint(event); const start=labelDragStart; labelDragStart=null; canvas.releasePointerCapture(event.pointerId); drawLabelCanvas(); if(!end) return; const x=Math.min(start.x,end.x),y=Math.min(start.y,end.y),w=Math.abs(end.x-start.x),h=Math.abs(end.y-start.y); if(w<5||h<5){toast('标注框过小');return} const action=labelDrawMode==='edit'?'update':labelDrawMode==='sample'?'add_sample':'add'; if(action==='add_sample'&&!labelActiveObjectId){toast('请先在右侧选择要追加视角的目标');return} let label=''; if(action==='add'){label=await chooseBrowserLabel(); if(!label) return} try{const j=await api('/api/label-session/object',{session_id:labelSessionId,action,object_id:labelActiveObjectId,bbox:{x,y,w,h},label}); labelSessionState=j.state; if(action==='add') labelActiveObjectId=labelSessionState.objects.at(-1)?.id||null; renderLabelSession()}catch(e){toast(e.message)}}); window.addEventListener('resize',()=>drawLabelCanvas())}
@@ -2846,16 +3020,16 @@ function setupLabelCanvas(){const canvas=document.getElementById('label-frame-ca
 function labelCanvasPoint(event){const image=document.getElementById('label-frame-image'); if(!image||!labelSessionState) return null; const rect=image.getBoundingClientRect(); if(!rect.width||!rect.height) return null; return {x:(event.clientX-rect.left)*labelSessionState.width/rect.width,y:(event.clientY-rect.top)*labelSessionState.height/rect.height}}
 function drawLabelCanvas(dragEnd=null){const canvas=document.getElementById('label-frame-canvas'); const image=document.getElementById('label-frame-image'); if(!canvas||!image||!labelSessionState||image.hidden) return; const rect=image.getBoundingClientRect(); const dpr=window.devicePixelRatio||1; canvas.style.width=rect.width+'px'; canvas.style.height=rect.height+'px'; canvas.style.left=(rect.left-canvas.parentElement.getBoundingClientRect().left)+'px'; canvas.style.top=(rect.top-canvas.parentElement.getBoundingClientRect().top)+'px'; canvas.width=Math.max(1,Math.round(rect.width*dpr)); canvas.height=Math.max(1,Math.round(rect.height*dpr)); const ctx=canvas.getContext('2d'); ctx.setTransform(dpr,0,0,dpr,0,0); ctx.clearRect(0,0,rect.width,rect.height); const sx=rect.width/labelSessionState.width,sy=rect.height/labelSessionState.height; labelSessionState.objects.forEach((obj,index)=>{const active=obj.id===labelActiveObjectId; ctx.strokeStyle=obj.ok?labelPalette(index):'#ff6678'; ctx.lineWidth=active?3:2; ctx.strokeRect(obj.x*sx,obj.y*sy,obj.w*sx,obj.h*sy); ctx.font='600 13px Microsoft YaHei UI'; const text=`#${obj.id} ${obj.label}${obj.ok?'':' LOST'}`; const tx=obj.x*sx,ty=Math.max(18,obj.y*sy-5); ctx.fillStyle='rgba(3,8,19,.85)'; const tw=ctx.measureText(text).width+10; ctx.fillRect(tx,ty-16,tw,20); ctx.fillStyle='#fff'; ctx.fillText(text,tx+5,ty)}); if(labelDragStart&&dragEnd){const x=Math.min(labelDragStart.x,dragEnd.x)*sx,y=Math.min(labelDragStart.y,dragEnd.y)*sy,w=Math.abs(labelDragStart.x-dragEnd.x)*sx,h=Math.abs(labelDragStart.y-dragEnd.y)*sy; ctx.strokeStyle='#fff';ctx.setLineDash([6,4]);ctx.lineWidth=2;ctx.strokeRect(x,y,w,h);ctx.setLineDash([])}}
 async function chooseBrowserLabel(){const labels=(labelSessionState?.labels||[]); const choices=labels.length?labels:(collect().label_name||'object').split(/[,;\n]+/).map(x=>x.trim()).filter(Boolean); if(choices.length===1) return choices[0]; const answer=prompt(`输入类别名称：\n${choices.map((x,i)=>`${i+1}. ${x}`).join('\n')}`,choices[0]); if(answer===null) return ''; const index=Number(answer); const label=Number.isInteger(index)&&index>=1&&index<=choices.length?choices[index-1]:answer.trim(); if(!choices.includes(label)){toast('请输入标签列表中的类别');return ''} return label}
-function setLabelDrawMode(mode){if(!labelSessionId){toast('请先开始网页标注');return} if((mode==='edit'||mode==='sample')&&!labelActiveObjectId){toast('请先在右侧选择目标');return} if(mode==='sample'&&labelSessionState?.tracker!=='multi_template'){toast('追加视角需要先选择 Multi-template（多角度）跟踪器');return} labelDrawMode=mode; toast(mode==='edit'?'请拖动绘制选中目标的新框':mode==='sample'?'请拖动绘制该目标在新角度下的框':'请拖动绘制新目标框')}
+function setLabelDrawMode(mode){if(!labelSessionId){toast('请先开始网页标注');return} if((mode==='edit'||mode==='sample')&&!labelActiveObjectId){toast('请先在右侧选择目标');return} if(mode==='sample'&&labelSessionState?.tracker!=='multi_template'){toast('追加视角需要在开始会话前选择“多视角实验模式”');return} labelDrawMode=mode; toast(mode==='edit'?'请拖动绘制选中目标的新框':mode==='sample'?'请拖动绘制该目标在新角度下的框':'请拖动绘制新目标框')}
 
-async function startBrowserLabelSession(){const v=collect(); if(v.label_source_type==='images'&&!v.label_images_input_dir.trim()){toast('请填写图片集文件夹路径');return} if(v.label_source_type==='camera'&&!/^\d+$/.test(v.label_camera_index.trim())){toast('请输入非负整数摄像头索引，例如 0');return} if(v.label_source_type==='video'&&!v.label_video.trim()){toast('请先从队列选择视频或填写视频路径');return} if(labelSessionId) await endBrowserLabelSession(); try{const j=await api('/api/label-session/start',{values:v}); labelSessionId=j.state.session_id; sessionStorage.setItem('maixcamLabelSessionId',labelSessionId); labelSessionState={...j.state,labels:(v.label_name||'object').split(/[,;\n]+/).map(x=>x.trim()).filter(Boolean)}; labelActiveObjectId=null; labelPlaying=false; showLabelStudio(true); setupLabelCanvas(); renderLabelSession(); refreshLabelFrame(); toast('网页标注已就绪，请添加目标框')}catch(e){toast(e.message)}}
+async function startBrowserLabelSession(){const v=collect(); if(v.label_source_type==='images'&&!v.label_images_input_dir.trim()){toast('请填写图片集文件夹路径');return} if(v.label_source_type==='camera'&&!/^\d+$/.test(v.label_camera_index.trim())){toast('请输入非负整数摄像头索引，例如 0');return} if(v.label_source_type==='video'&&!v.label_video.trim()){toast('请先从队列选择视频或填写视频路径');return} if(labelSessionId) await endBrowserLabelSession(); try{const j=await api('/api/label-session/start',{values:v}); labelSessionId=j.state.session_id; sessionStorage.setItem('myAutoTrainLabelSessionId',labelSessionId); sessionStorage.removeItem('maixcamLabelSessionId'); labelSessionState={...j.state,labels:(v.label_name||'object').split(/[,;\n]+/).map(x=>x.trim()).filter(Boolean)}; labelActiveObjectId=null; labelPlaying=false; showLabelStudio(true); setupLabelCanvas(); renderLabelSession(); refreshLabelFrame(); toast('半自动标注已就绪，请先添加目标框')}catch(e){toast(e.message)}}
 async function advanceBrowserLabelFrame(){if(!labelSessionId||labelAdvanceBusy) return; labelAdvanceBusy=true; try{const j=await api('/api/label-session/advance',{session_id:labelSessionId}); labelSessionState={...j.state,labels:labelSessionState?.labels||[]}; if(labelSessionState.lost||labelSessionState.ended) stopBrowserLabelPlay(); renderLabelSession(); refreshLabelFrame()}catch(e){stopBrowserLabelPlay();toast(e.message)}finally{labelAdvanceBusy=false}}
 function toggleBrowserLabelPlay(){if(labelPlaying) stopBrowserLabelPlay();else startBrowserLabelPlay()}
 function startBrowserLabelPlay(){if(!labelSessionId){toast('请先开始网页标注');return} if(!labelSessionState?.objects.length){toast('请先添加至少一个目标框');return} if(labelSessionState.lost){toast('请先修正或删除丢失目标');return} labelPlaying=true; renderLabelSession(); const tick=async()=>{if(!labelPlaying) return; await advanceBrowserLabelFrame(); if(labelPlaying) labelPlayTimer=setTimeout(tick,45)}; tick()}
 function stopBrowserLabelPlay(){labelPlaying=false;clearTimeout(labelPlayTimer);labelPlayTimer=null;renderLabelSession()}
-async function saveBrowserLabelFrame(){if(!labelSessionId) return; try{const j=await api('/api/label-session/save',{session_id:labelSessionId}); labelSessionState={...j.state,labels:labelSessionState?.labels||[]}; renderLabelSession(); if(j.saved){toast('当前帧已保存');loadLabelResults()}else toast('没有可保存的有效目标框')}catch(e){toast(e.message)}}
+async function saveBrowserLabelFrame(){if(!labelSessionId) return; try{const j=await api('/api/label-session/save',{session_id:labelSessionId}); labelSessionState={...j.state,labels:labelSessionState?.labels||[]}; renderLabelSession(); if(j.saved){toast('当前帧已保存');loadLabelResults()}else toast(j.state?.last_warning||'当前帧还不能安全保存')}catch(e){toast(e.message)}}
 async function deleteBrowserLabelObject(){if(!labelSessionId||!labelActiveObjectId){toast('请先选择目标');return} try{const j=await api('/api/label-session/object',{session_id:labelSessionId,action:'delete',object_id:labelActiveObjectId,bbox:{x:0,y:0,w:3,h:3}}); labelSessionState={...j.state,labels:labelSessionState?.labels||[]}; labelActiveObjectId=labelSessionState.objects[0]?.id||null; renderLabelSession()}catch(e){toast(e.message)}}
-async function endBrowserLabelSession(){stopBrowserLabelPlay(); if(!labelSessionId){showLabelStudio(false);return} try{await api('/api/label-session/end',{session_id:labelSessionId})}catch(e){} labelSessionId='';labelSessionState=null;labelActiveObjectId=null;sessionStorage.removeItem('maixcamLabelSessionId');showLabelStudio(false);loadLabelResults()}
+async function endBrowserLabelSession(){stopBrowserLabelPlay(); if(!labelSessionId){showLabelStudio(false);return} try{await api('/api/label-session/end',{session_id:labelSessionId})}catch(e){} labelSessionId='';labelSessionState=null;labelActiveObjectId=null;sessionStorage.removeItem('myAutoTrainLabelSessionId');sessionStorage.removeItem('maixcamLabelSessionId');showLabelStudio(false);loadLabelResults()}
 async function runLabelCurrent(){await startBrowserLabelSession()}
 async function copyCommand(action){try{const cmd=await command(action); await navigator.clipboard.writeText(cmd); toast('命令已复制')}catch(e){toast(e.message)}}
 async function runAction(action){const startButton=document.getElementById('start-train-button'); try{if(action==='train'){if(startButton){startButton.setAttribute('disabled','');startButton.textContent='正在检查...'} const ready=await checkTrainReady(false); if(!ready) return; if(startButton) startButton.textContent='正在启动...'} await api('/api/run',{action,values:collect()}); showTab(action==='train'?'train':'logs'); toast(action==='train'?'训练已启动，请查看下方进度':'任务已启动'); refreshState()}catch(e){toast(e.message)}finally{if(action==='train'&&startButton){startButton.removeAttribute('disabled');startButton.textContent='检查并开始训练'}}}
@@ -2864,7 +3038,7 @@ async function stopTrainExport(){try{const j=await api('/api/stop-train-export',
 async function loadLabelResults(){try{await saveValues(); const r=await fetch('/api/label-results'); const j=await r.json(); const box=document.getElementById('label-results'); box.innerHTML=''; const items=j.items||[]; if(!items.length){box.innerHTML='<div class="empty">当前图片目录和标注目录中还没有可显示的标注结果。</div>'; return} for(const it of items){const card=document.createElement('div'); card.className='sample'; const src='/api/label-preview?image='+encodeURIComponent(it.image)+'&xml='+encodeURIComponent(it.xml)+'&t='+Date.now(); card.innerHTML=`<img src="${src}" loading="lazy"><div class="meta"><b>${it.stem}</b><span>${(it.boxes||[]).length} 个框</span><button class="delete">删除标注</button></div>`; card.querySelector('.delete').onclick=async()=>{const imageMode=collect().label_source_type==='images'; const target=imageMode?'对应 XML 标注':'这张图片和对应 XML'; if(Date.now()>deleteConfirmUntil){if(!confirm(`确定删除${target}吗？\n确认后 5 分钟内删除标注不再重复询问。`)) return; deleteConfirmUntil=Date.now()+5*60*1000} await api('/api/delete-label-sample',{image:it.image,xml:it.xml}); card.remove(); toast(imageMode?'已删除 XML 标注':'已删除废图和 XML')}; box.appendChild(card)}}catch(e){toast(e.message)}}
 async function loadTrainPlots(){try{const r=await fetch('/api/train-plots'); const j=await r.json(); const box=document.getElementById('train-plots'); if(!box) return; const note=document.getElementById('train-plots-note'); const items=j.items||[]; if(note) note.textContent=items.length?`已发现 ${items.length} 张图片`:'训练开始后自动刷新'; if(!items.length){box.innerHTML='<div class="empty">训练进行中或尚未生成可视化图。</div>'; return} box.innerHTML=''; for(const item of items){const card=document.createElement('div'); card.className='sample'; card.innerHTML=`<img src="/api/train-plot?name=${encodeURIComponent(item.name)}&t=${Date.now()}" loading="lazy"><div class="meta"><b>${item.name}</b></div>`; box.appendChild(card)}}catch(e){}}
 function scheduleLabelResultsRefresh(){clearTimeout(labelResultsTimer); labelResultsTimer=setTimeout(()=>loadLabelResults(),350)}
-async function refreshState(){try{const r=await fetch('/api/state'); if(!r.ok) throw new Error(`HTTP ${r.status}`); const s=await r.json(); setConnectionState(true); apply(s.values||{}); updateTrainProgress(s.train_progress||{}); const log=document.getElementById('log'); log.textContent=(s.logs||[]).join(''); log.scrollTop=log.scrollHeight; const pill=document.getElementById('runPill'); pill.className='pill '+(s.running?'run':'idle'); pill.querySelector('span:last-child').textContent=s.running?'运行中':'空闲'; const jobNames={train:'模型训练',convert:'模型转换',test:'模型测试',label:'自动标注',train_ssh:'训练 SSH 检查',vm_ssh:'转换 SSH 检查'}; document.getElementById('jobInfo').textContent=s.job?`${jobNames[s.job]||s.job} · 开始 ${s.started_at||'-'}${s.finished_at?' · 结束 '+s.finished_at:''}${s.exit_code!==null&&s.exit_code!==undefined?' · 退出码 '+s.exit_code:''}`:'暂无任务'; const errorBox=document.getElementById('lastError'); const failed=!s.running&&s.job&&s.exit_code!==null&&Number(s.exit_code)!==0; if(s.last_error||failed){errorBox.hidden=false; errorBox.textContent=s.last_error||`上次任务失败（退出码 ${s.exit_code}），请打开“运行日志”查看具体原因。`}else errorBox.hidden=true; const box=document.getElementById('markers'); box.innerHTML=''; for(const [k,v] of Object.entries(s.markers||{})){const div=document.createElement('div'); div.className='marker'; div.innerHTML=`<b>${k}</b><span>${v}</span>`; box.appendChild(div)}}catch(e){setConnectionState(false); const pill=document.getElementById('runPill'); if(pill){pill.className='pill idle';pill.querySelector('span:last-child').textContent='未连接'} const errorBox=document.getElementById('lastError'); if(errorBox){errorBox.hidden=false;errorBox.textContent='训练面板未运行。请双击 start_train_panel.cmd，然后刷新此页面。'}}}
+async function refreshState(){try{const r=await fetch('/api/state'); if(!r.ok) throw new Error(`HTTP ${r.status}`); const s=await r.json(); setConnectionState(true); apply(s.values||{}); updateTrainProgress(s.train_progress||{}); const log=document.getElementById('log'); log.textContent=(s.logs||[]).join(''); log.scrollTop=log.scrollHeight; const pill=document.getElementById('runPill'); pill.className='pill '+(s.running?'run':'idle'); pill.querySelector('span:last-child').textContent=s.running?'运行中':'空闲'; const jobNames={train:'模型训练',export:'多平台导出',convert:'MaixCAM 专用转换',test:'模型测试',label:'半自动标注',train_ssh:'训练 SSH 检查',vm_ssh:'转换 SSH 检查'}; document.getElementById('jobInfo').textContent=s.job?`${jobNames[s.job]||s.job} · 开始 ${s.started_at||'-'}${s.finished_at?' · 结束 '+s.finished_at:''}${s.exit_code!==null&&s.exit_code!==undefined?' · 退出码 '+s.exit_code:''}`:'暂无任务'; const errorBox=document.getElementById('lastError'); const failed=!s.running&&s.job&&s.exit_code!==null&&Number(s.exit_code)!==0; if(s.last_error||failed){errorBox.hidden=false; errorBox.textContent=s.last_error||`上次任务失败（退出码 ${s.exit_code}），请打开“运行日志”查看具体原因。`}else errorBox.hidden=true; const box=document.getElementById('markers'); box.innerHTML=''; for(const [k,v] of Object.entries(s.markers||{})){const div=document.createElement('div'); div.className='marker'; div.innerHTML=`<b>${k}</b><span>${v}</span>`; box.appendChild(div)}}catch(e){setConnectionState(false); const pill=document.getElementById('runPill'); if(pill){pill.className='pill idle';pill.querySelector('span:last-child').textContent='未连接'} const errorBox=document.getElementById('lastError'); if(errorBox){errorBox.hidden=false;errorBox.textContent='训练面板未运行。请双击 start_train_panel.cmd，然后刷新此页面。'}}}
 function copyLogs(){navigator.clipboard.writeText(document.getElementById('log').textContent);toast('日志已复制')}
 function showTab(name){const target=document.getElementById('tab-'+name); if(!target) name='train'; document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));document.getElementById('tab-'+name).classList.add('active');document.querySelectorAll('.nav button').forEach(x=>x.classList.toggle('active',x.dataset.tab===name)); localStorage.setItem('myAutoTrainTab',name); if(name==='label') loadLabelResults()}
 
@@ -2873,6 +3047,7 @@ document.querySelectorAll('input,select').forEach(el=>{const handler=()=>{if(el.
 if(localStorage.getItem('myAutoTrainAdvanced')==='1'){document.body.classList.add('show-advanced');setText('advanced-toggle','收起更多设置')}
 showTab(localStorage.getItem('myAutoTrainTab')||'train');
 updateSplitRatio();
+loadDeviceProfiles();
 refreshState(); setInterval(refreshState,1400);
 
 
@@ -2883,7 +3058,7 @@ refreshState(); setInterval(refreshState,1400);
 
 
 class PanelHandler(BaseHTTPRequestHandler):
-    server_version = "MaixCamWebPanel/1.0"
+    server_version = "MyAutoTrainWebPanel/2.0"
 
     def log_message(self, format: str, *args: Any) -> None:
         return
@@ -2927,6 +3102,9 @@ class PanelHandler(BaseHTTPRequestHandler):
                     "finished_at": STATE["finished_at"],
                     "last_error": STATE["last_error"],
                 })
+            return
+        if parsed.path == "/api/device-profiles":
+            self.send_json({"items": public_device_profiles()})
             return
         if parsed.path == "/api/train-plots":
             _, items = list_train_plots()
@@ -3152,6 +3330,14 @@ class PanelHandler(BaseHTTPRequestHandler):
                 values = clean_values(body.get("values"))
                 self.send_json({"path": pick_model_file(values.get("base_model", ""))})
                 return
+            if self.path == "/api/pick-deploy-model":
+                values = clean_values(body.get("values"))
+                self.send_json({"path": pick_model_file(values.get("deploy_model", ""), include_onnx=True)})
+                return
+            if self.path == "/api/pick-deploy-output-dir":
+                values = clean_values(body.get("values"))
+                self.send_json({"path": pick_directory(values.get("export_output_dir", ""), "选择部署模型输出目录")})
+                return
             if self.path == "/api/pick-test-image-folder":
                 values = clean_values(body.get("values"))
                 self.send_json({"path": pick_directory(values.get("test_image_folder", ""))})
@@ -3213,17 +3399,21 @@ class PanelHandler(BaseHTTPRequestHandler):
                             if action == "add_sample":
                                 add_sample = getattr(obj.tracker, "add_sample", None)
                                 if not callable(add_sample):
-                                    raise ValueError("追加视角仅支持 Multi-template tracker，请重新开始会话后选择该模式。")
+                                    raise ValueError("追加视角仅支持多视角实验模式，请重新开始会话后选择该模式。")
                                 if not add_sample(frame, bbox):
                                     raise ValueError("参考视角采集失败，请重新绘制更大的框。")
                                 obj.bbox = bbox
                                 obj.ok = True
                                 obj.sample_count += 1
+                                obj.quality = 1.0
+                                obj.warning = ""
                             else:
                                 obj.bbox = bbox
                                 obj.tracker = make_label_tracker(session["tracker"])
                                 obj.ok = init_label_tracker(obj.tracker, frame, bbox)
                                 obj.sample_count = 1
+                                obj.quality = 1.0 if obj.ok else 0.0
+                                obj.warning = "" if obj.ok else "跟踪器重新初始化失败"
                         else:
                             label = str(body.get("label", "")).strip()
                             if label not in session["labels"]:
@@ -3233,6 +3423,9 @@ class PanelHandler(BaseHTTPRequestHandler):
                                 raise ValueError("跟踪器初始化失败，请换一个更大的标注框。")
                             session["objects"].append(LabelTrackObject(session["next_object_id"], label, bbox, tracker))
                             session["next_object_id"] += 1
+                    if not any(not obj.ok for obj in session["objects"]):
+                        session["last_warning"] = ""
+                    session["last_auto_saved"] = False
                     state = label_session_state(session)
                 self.send_json({"ok": True, "state": state})
                 return
@@ -3285,8 +3478,8 @@ class PanelHandler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="MaixCAM Pro YOLO HTML Web Panel")
-    parser.add_argument("--host", default="0.0.0.0")
+    parser = argparse.ArgumentParser(description="MyAutoTrain multi-platform YOLO web panel")
+    parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8989)
 
 
@@ -3310,7 +3503,7 @@ def main() -> None:
 
 
         raise SystemExit(1) from exc
-    print(f"MaixCAM Pro YOLO Web Panel: {url}")
+    print(f"MyAutoTrain YOLO Web Panel: {url}")
     print(f"Listening on {args.host}:{args.port}")
 
     if not args.no_browser:

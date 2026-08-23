@@ -1,6 +1,8 @@
-# MyAutoTrain 团队版
+# MyAutoTrain
 
-MyAutoTrain 是一个面向 Windows 和 Ubuntu 的 YOLO 训练工具，把数据转换、辅助标注、模型训练、导出和测试放在同一个网页中。队友不需要配置命令行环境，也不需要知道 CUDA 和 Python 的安装细节。
+MyAutoTrain 是一个面向 Windows、Ubuntu 和多种边缘部署平台的 YOLO 训练工具，把数据检查、半自动标注、模型训练、多平台导出和测试放在同一个网页中。训练端负责生成通用模型，部署端通过设备配置档适配树莓派、Rockchip/香橙派、地瓜机器人 RDK、MaixCAM、NVIDIA Jetson、Intel OpenVINO 等运行时。
+
+> 当前仍处于公开发布前的工程化阶段。设备配置档表示“已有导出路线”，不等于所有板卡均已完成真机验证；请查看[设备适配文档](docs/DEVICE_ADAPTERS.md)。
 
 ## 队友第一次使用
 
@@ -24,7 +26,7 @@ MyAutoTrain 是一个面向 Windows 和 Ubuntu 的 YOLO 训练工具，把数据
 Ubuntu 22.04/24.04 建议使用 Bash 运行。部署工具支持 Python 3.10–3.14，会自动判断 NVIDIA GPU，安装对应的 CUDA 12.8 或 CPU 版 PyTorch，并安装包括 `onnxruntime` 在内的项目依赖。
 
 ```bash
-cd MyAutoTrain-Team-日期时间
+cd MyAutoTrain-日期时间
 bash ubuntu_install_and_start.sh
 ```
 
@@ -48,7 +50,7 @@ Ubuntu 上访问：<http://127.0.0.1:8989/>。如果要从其他电脑访问，�
 维护者双击 `制作队友部署包.cmd`，程序会在 `dist` 文件夹生成：
 
 ```text
-MyAutoTrain-Team-日期时间.zip
+MyAutoTrain-日期时间.zip
 ```
 
 分享包会自动排除本机虚拟环境、私人路径配置、训练数据、模型权重、日志和训练结果，避免把个人文件发给队友。
@@ -57,9 +59,13 @@ MyAutoTrain-Team-日期时间.zip
 
 - [兼容性说明](docs/COMPATIBILITY.md)：系统、Python、GPU、依赖和已知限制。
 - [使用说明](docs/USAGE.md)：Windows/Ubuntu 安装、训练、测试、导出和排错。
+- [设备适配与模型导出](docs/DEVICE_ADAPTERS.md)：树莓派、Rockchip、RDK、MaixCAM、Jetson、OpenVINO。
+- [半自动标注说明](docs/SEMI_AUTO_LABELING.md)：质量检查、复核流程和已知边界。
+- [优化路线图](docs/ROADMAP.md)：公开发布前、设备适配、数据与工程化计划。
+- [参与贡献](CONTRIBUTING.md) 与 [安全说明](SECURITY.md)：设备验证要求、代码来源和本地服务边界。
 - `.gitignore` 已排除虚拟环境、日志、个人配置、训练输出和部署压缩包。
 
-上传 GitHub 前请根据自己的发布方式补充 `LICENSE`，并确认不包含个人数据、训练图片、私有路径、日志或模型权重。
+本项目包含从已有工程改写的代码。公开发布前必须先补全 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)，确认原始来源和许可证，再选择兼容的 `LICENSE`；来源未核实前不要宣称全部原创。还需确认仓库不包含个人数据、训练图片、私有路径、日志或模型权重。
 
 ## 推荐操作流程
 
@@ -120,12 +126,29 @@ dataset/
 
 进入“测试模型”，可测试摄像头实时画面、单张图片或整个图片文件夹。
 
+### 5. 部署到目标设备
+
+进入“部署与导出”，选择训练得到的 `best.pt` 和目标平台：
+
+| 目标 | 默认路线 |
+| --- | --- |
+| 通用 Linux / Windows | ONNX |
+| 树莓派 CPU | NCNN |
+| Rockchip RK35xx / 对应香橙派 | RKNN |
+| 地瓜机器人 RDK X3/X5 | ONNX → 厂商 PTQ |
+| MaixCAM | ONNX → `.cvimodel` + `.mud` |
+| NVIDIA Jetson | TensorRT engine |
+| Intel CPU/GPU/NPU | OpenVINO |
+
+导出目录会生成模型产物和 `*.manifest.json` 部署清单。任何 INT8 模型都要使用代表性校准数据，并在目标设备上重新验证精度。
+
 ## 硬件与环境
 
 - 有 NVIDIA 显卡：安装器自动安装 CUDA 12.8 PyTorch，并使用 GPU 训练。
 - 没有 NVIDIA 显卡：自动安装 CPU 版，功能完整但训练较慢。
 - Intel AI Boost NPU：可用于后续 OpenVINO 推理扩展，不能用于 PyTorch YOLO 训练。
 - Python：支持 3.10–3.14；电脑没有 Python 时安装器会尝试通过 winget 安装 Python 3.14。
+- 依赖包含 `onnxruntime`，用于 ONNX 模型验证；厂商转换工具链建议使用独立环境或容器。
 
 系统自检报告保存在 `logs/system_check.json`。
 
@@ -165,6 +188,8 @@ train_panel.py           网页与本地服务
 host_train_export.py     数据准备、训练与导出
 model_test.py            模型测试
 video_track_label.py     辅助标注
+device_profiles.py       设备配置档
+export_model.py          多平台模型导出
 ```
 
 用户路径保存在 `train_panel_defaults.json`，该文件不会进入团队分享包。

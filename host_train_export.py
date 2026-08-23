@@ -741,7 +741,7 @@ def prepare_existing_yolo(dataset_yaml: Path, out: Path, copy_dataset: bool = Fa
 def run_train_stage(args, script_root: Path):
     dataset_root = Path(args.dataset_root).resolve()
     timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-    work = dataset_root / f".maixcam_work_{timestamp}"
+    work = dataset_root / f".myautotrain_work_{timestamp}"
     yolo_data = work / "yolo_dataset"
     out = dataset_root / f"outputs_{timestamp}"
     work.mkdir(parents=True, exist_ok=True)
@@ -939,7 +939,7 @@ def run_convert_stage(args, script_root: Path, train_result=None):
 
 
 def build_parser(script_root: Path):
-    ap = argparse.ArgumentParser(description="YOLO train / MaixCAM model convert workflow")
+    ap = argparse.ArgumentParser(description="MyAutoTrain YOLO training workflow with optional MaixCAM conversion")
     ap.add_argument("--stage", choices=["train", "convert", "all"], default="all")
     ap.add_argument("--dataset-root", default=str(script_root))
     ap.add_argument("--images-dir", default="")
@@ -964,16 +964,16 @@ def build_parser(script_root: Path):
     ap.add_argument("--train-device", choices=["cuda", "cpu"], default="cuda")
     ap.add_argument("--train-cache", choices=["False", "True", "disk"], default="False")
     ap.add_argument("--stop-export-signal", default="")
-    ap.add_argument("--project-name", default="douzi_yolov8n_448")
+    ap.add_argument("--project-name", default="my_yolo_project")
 
-    ap.add_argument("--model-name", default="douzi_yolov8n_448")
+    ap.add_argument("--model-name", default="my_yolo_model")
     ap.add_argument("--operator-mode", choices=["recommended", "maixcam"], default="recommended")
 
     ap.add_argument("--train-mode", choices=["local", "remote-windows"], default="local")
     ap.add_argument("--remote-train-user", default="")
     ap.add_argument("--remote-train-host", default="127.0.0.1")
-    ap.add_argument("--remote-train-port", type=int, default=8989)
-    ap.add_argument("--remote-train-work-dir", default="C:/douzi_train_jobs")
+    ap.add_argument("--remote-train-port", type=int, default=22)
+    ap.add_argument("--remote-train-work-dir", default="C:/myautotrain_train_jobs")
 
     ap.add_argument("--model-path", default="")
     ap.add_argument("--classes-path", default="")
@@ -982,7 +982,7 @@ def build_parser(script_root: Path):
 
     ap.add_argument("--vm-user", default="")
     ap.add_argument("--vm-host", default="")
-    ap.add_argument("--vm-work-dir", default="~/桌面/12345/douzi_maixcam_jobs")
+    ap.add_argument("--vm-work-dir", default="~/myautotrain/maixcam_jobs")
     ap.add_argument("--skip-vm-convert", action="store_true")
     return ap
 

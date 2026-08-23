@@ -45,7 +45,7 @@ function Find-CompatiblePython {
 
 try {
     Set-Location $ScriptRoot
-    Write-Host "MyAutoTrain 团队版安装器" -ForegroundColor Red
+    Write-Host "MyAutoTrain 安装器" -ForegroundColor Red
     Write-Host "安装目录：$ScriptRoot"
 
     $python = Find-CompatiblePython

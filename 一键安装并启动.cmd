@@ -1,7 +1,7 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-title MyAutoTrain Team Installer
+title MyAutoTrain Installer
 
 echo MyAutoTrain is preparing this computer...
 echo This may take several minutes on first use.

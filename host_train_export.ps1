@@ -1,14 +1,14 @@
 ﻿param(
     [string]$VmUser = "",
     [string]$VmHost = "",
-    [string]$VmWorkDir = "~/douzi_maixcam_jobs",
+    [string]$VmWorkDir = "~/myautotrain/maixcam_jobs",
     [int]$ImgSize = 448,
     [int]$Epochs = 100,
     [int]$Batch = 16,
     [double]$Lr0 = 0.01,
     [string]$CondaEnv = "yolov8",
     [string]$BaseModel = "yolov8n.pt",
-    [string]$ProjectName = "douzi_yolov8n_448",
+    [string]$ProjectName = "my_yolo_model",
     [string]$DatasetRoot = "",
     [switch]$SkipVmConvert
 )
@@ -21,7 +21,7 @@ if ([string]::IsNullOrWhiteSpace($DatasetRoot)) {
 $DatasetRoot = (Resolve-Path $DatasetRoot).Path
 $Root = $DatasetRoot
 $Timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-$Work = Join-Path $Root ".maixcam_work_$Timestamp"
+$Work = Join-Path $Root ".myautotrain_work_$Timestamp"
 $YoloData = Join-Path $Work "yolo_dataset"
 $Out = Join-Path $Root "outputs_$Timestamp"
 
@@ -137,8 +137,8 @@ Invoke-Argv $YoloCmd @("export", "model=$BestPt", "format=onnx", "imgsz=$ImgSize
 $BestOnnx = Join-Path $Work "$ProjectName\weights\best.onnx"
 if (!(Test-Path $BestOnnx)) { throw "best.onnx not found: $BestOnnx" }
 
-Copy-Item $BestPt (Join-Path $Out "douzi_yolov8n_448.pt") -Force
-Copy-Item $BestOnnx (Join-Path $Out "douzi_yolov8n_448.onnx") -Force
+Copy-Item $BestPt (Join-Path $Out "$ProjectName.pt") -Force
+Copy-Item $BestOnnx (Join-Path $Out "$ProjectName.onnx") -Force
 Copy-Item (Join-Path $YoloData "classes.txt") (Join-Path $Out "classes.txt") -Force
 New-Item -ItemType Directory -Force (Join-Path $Out "calib_images") | Out-Null
 Get-ChildItem (Join-Path $YoloData "images\train") -Filter *.jpg | Select-Object -First 200 | ForEach-Object { Copy-Item $_.FullName (Join-Path $Out "calib_images" $_.Name) -Force }

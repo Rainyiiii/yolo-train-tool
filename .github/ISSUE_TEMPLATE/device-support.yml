@@ -1,0 +1,47 @@
+name: 设备适配报告
+description: 提交新板卡适配、真机验证结果或兼容性问题
+title: "[Device] "
+labels: ["device-support"]
+body:
+  - type: input
+    id: board
+    attributes:
+      label: 板卡与 SoC
+      placeholder: 例如 Orange Pi 5 Plus / RK3588
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: 系统与工具链版本
+      description: 系统镜像、架构、Python、驱动、厂商编译器和运行时版本
+    validations:
+      required: true
+  - type: textarea
+    id: export
+    attributes:
+      label: 模型与导出参数
+      description: 任务、模型、输入尺寸、格式、芯片参数、INT8/FP16 和可复现命令
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: 真机结果
+      description: 是否加载、输出是否正确、FPS/延迟、峰值内存和精度变化
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志与补充信息
+      render: shell
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: 提交确认
+      options:
+        - label: 我已移除账号、IP、密钥、私人路径和数据集内容
+          required: true
+        - label: 我已注明引用代码或脚本的来源和许可证
+          required: true

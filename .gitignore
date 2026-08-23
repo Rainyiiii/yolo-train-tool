@@ -21,6 +21,12 @@ logs/
 *.onnx
 outputs_*/
 .maixcam_work_*/
+.myautotrain_work_*/
+deploy/
+*.engine
+*_ncnn_model/
+*_openvino_model/
+*_rknn_model/
 
 # Distribution artifacts
 dist/

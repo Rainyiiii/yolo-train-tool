@@ -6,7 +6,7 @@
 
 ```bash
 git clone https://github.com/Rainyiiii/yolo-train-tool.git
-cd myautotrain-team
+cd yolo-train-tool
 ```
 
 不要直接在压缩包预览窗口中运行脚本，先完整解压到一个有写入权限的目录。
@@ -110,9 +110,11 @@ dataset/
 
 测试时可调整置信度阈值 `conf`。阈值较低会得到更多候选框，但误检可能增加。
 
-## 7. 导出与 ONNX
+## 7. 多平台导出
 
-训练完成后可以导出 ONNX 模型，用于跨平台推理或后续设备转换。项目安装器会自动安装：
+训练完成后进入“部署与导出”，选择 `best.pt`、目标平台和输出目录。平台会生成目标模型以及 `*.manifest.json` 部署清单。当前内置通用 ONNX、树莓派 NCNN、Rockchip RKNN、地瓜 RDK ONNX 交接、MaixCAM、TensorRT 和 OpenVINO 配置档，详见[设备适配文档](DEVICE_ADAPTERS.md)。
+
+ONNX 仍是厂商工具链之间的主要交接格式。项目安装器会自动安装：
 
 - `onnx`
 - `onnxsim`
@@ -121,7 +123,13 @@ dataset/
 
 如果使用远程训练环境，远程工具会根据 CPU/CUDA 配置选择 `onnxruntime` 或 `onnxruntime-gpu`。
 
-## 8. 配置文件
+INT8 导出需要填写 `data.yaml` 并使用有代表性的校准数据。导出成功不代表板端适配已经完成；部署前必须在目标设备核对预处理、类别顺序、输出张量、速度和精度。
+
+## 8. 半自动标注
+
+网页标注会在跟踪失败、位置/尺寸突变或模板匹配质量较低时暂停。只要当前帧有一个目标需要复核，整帧都不会自动保存，以避免多目标漏标。推荐逐段播放、频繁抽查，具体见[半自动标注说明](SEMI_AUTO_LABELING.md)。
+
+## 9. 配置文件
 
 首次安装会根据设备生成：
 
@@ -142,7 +150,7 @@ train_panel_defaults.json
 - 训练轮数
 - 远程训练主机
 
-## 9. 日志和诊断
+## 10. 日志和诊断
 
 优先查看：
 
