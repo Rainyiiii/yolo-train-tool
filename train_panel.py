@@ -2699,7 +2699,7 @@ body{color:var(--text);background:radial-gradient(circle at 88% 0,#ffe4e4 0,tran
 <div class="wrap">
   <div class="hero">
     <div class="card title">
-      <div id="connectionBadge" class="eyebrow"><span class="dot"></span><span>面板已连接 · 本机端口 8989</span></div>
+      <div id="connectionBadge" class="eyebrow"><span class="dot"></span><span>面板已连接 · 本机服务</span></div>
 
       <h1>YOLO团队训练平台</h1>
       <p class="subtitle">从数据准备、训练资产追踪到多设备部署都在这里完成。每次训练会记录数据集与模型的对应关系，方便后续测试、导出和复现。</p>
@@ -3146,7 +3146,7 @@ function scheduleResourceEstimate(){clearTimeout(resourceEstimateTimer); resourc
 function apply(v){const before=JSON.stringify(values); values={...values,...v}; for(const id of fields){const el=document.getElementById(id); if(el && document.activeElement!==el && values[id]!==undefined && el.value!==String(values[id])) el.value=values[id]} updateSplitRatio(); const skipVm=document.getElementById('skip_vm_convert'); if(skipVm) skipVm.checked=!!values.skip_vm_convert; const exportInt8=document.getElementById('export_int8'); if(exportInt8) exportInt8.checked=!!values.export_int8; const rawOverwrite=document.getElementById('raw_overwrite'); if(rawOverwrite) rawOverwrite.checked=!!values.raw_overwrite; for(const n of ['operator_mode','train_mode','train_device','train_task','test_source','label_source_type']){if(values[n]!==undefined){const el=document.querySelector(`input[name="${n}"][value="${values[n]}"]`); if(el && document.activeElement!==el) el.checked=true}} updateTrainTaskUI(); updatePreparedDatasetUI(); updateLabelSourceUI(); updateDeploymentProfile(); updateCurrentVideo(); if(JSON.stringify(values)!==before) updateCommands(); scheduleResourceEstimate()}
 
 
-function setConnectionState(online){const badge=document.getElementById('connectionBadge'); if(!badge) return; badge.classList.toggle('offline',!online); const text=badge.querySelector('span:last-child'); if(text) text.textContent=online?'面板已连接 · 本机端口 8989':'面板连接已断开 · 请运行启动脚本'}
+function setConnectionState(online){const badge=document.getElementById('connectionBadge'); if(!badge) return; badge.classList.toggle('offline',!online); const text=badge.querySelector('span:last-child'); if(text) text.textContent=online?'面板已连接 · 本机服务':'面板连接已断开 · 请运行启动脚本'}
 async function api(path,body){let r; try{r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})})}catch(e){setConnectionState(false);throw new Error('无法连接训练面板。请双击 start_train_panel.cmd 后刷新页面。')} setConnectionState(true); let j; try{j=await r.json()}catch(e){throw new Error(`面板返回了无法解析的结果（HTTP ${r.status}）`)} if(!r.ok||j.error) throw new Error(j.error||r.statusText); return j}
 let valuesSaveQueue=Promise.resolve();
 function saveValues(){const snapshot={...collect()}; valuesSaveQueue=valuesSaveQueue.then(()=>api('/api/values',{values:snapshot})).catch(()=>{}); return valuesSaveQueue}
@@ -3825,7 +3825,7 @@ def main() -> None:
         server = ThreadingHTTPServer((args.host, args.port), PanelHandler)
     except OSError as exc:
         print(f"无法监听 {args.host}:{args.port}：{exc}", file=sys.stderr)
-        print("请确认 8989 端口未被占用，并允许 Python 通过防火墙。", file=sys.stderr)
+        print(f"请确认 {args.port} 端口未被占用，并允许 Python 通过防火墙。", file=sys.stderr)
 
 
         raise SystemExit(1) from exc

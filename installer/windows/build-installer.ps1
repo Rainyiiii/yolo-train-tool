@@ -36,7 +36,7 @@ function Get-SignToolPath {
 function Invoke-CodeSigning([string]$FilePath) {
     if (!$SigningPfx) {
         if ($RequireSigning) { throw "当前发布要求代码签名，但未配置 YOLO_SIGN_PFX。" }
-        Write-Warning "未配置代码签名证书，生成的文件仅适合本地测试。"
+        Write-Warning "未配置代码签名证书；当前安装包为未签名测试版本，Windows 可能显示未知发布者。"
         return
     }
     if (!(Test-Path -LiteralPath $SigningPfx)) { throw "代码签名证书文件不存在：$SigningPfx" }

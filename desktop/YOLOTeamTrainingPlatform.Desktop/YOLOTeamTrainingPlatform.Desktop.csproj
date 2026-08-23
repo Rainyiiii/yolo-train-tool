@@ -8,7 +8,7 @@
     <AssemblyName>YOLOTeamTrainingPlatform</AssemblyName>
     <RootNamespace>YOLOTeamTrainingPlatform.Desktop</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>3.2.0</Version>
+    <Version>3.2.1</Version>
     <Product>YOLO团队训练平台</Product>
     <Company>YOLO Team Training Platform Contributors</Company>
     <Description>Local-first YOLO dataset, training, model asset, export, and testing desktop platform.</Description>

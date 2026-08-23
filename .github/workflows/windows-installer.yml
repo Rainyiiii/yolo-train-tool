@@ -39,7 +39,11 @@ jobs:
             [IO.File]::WriteAllBytes($certificatePath, [Convert]::FromBase64String($env:WINDOWS_SIGNING_CERT_BASE64))
             $env:YOLO_SIGN_PFX = $certificatePath
           }
-          if ($env:GITHUB_REF -like "refs/tags/*") { $env:YOLO_REQUIRE_SIGNING = "1" }
+          # Prerelease tags may be published unsigned while public testing is in progress.
+          # Stable tags remain blocked unless a trusted signing certificate is configured.
+          if ($env:GITHUB_REF -like "refs/tags/*" -and $env:GITHUB_REF_NAME -notlike "*-*") {
+            $env:YOLO_REQUIRE_SIGNING = "1"
+          }
           .\installer\windows\build-installer.ps1
 
       - name: Remove signing certificate

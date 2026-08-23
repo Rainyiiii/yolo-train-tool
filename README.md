@@ -12,7 +12,7 @@ YOLO团队训练平台是一个面向 Windows、Ubuntu 和多种边缘部署平�
 
 ## 队友第一次使用
 
-1. 双击 `YOLO-Team-Training-Platform-Setup-v3.2.0-beta.exe`。
+1. 双击 `YOLO-Team-Training-Platform-Setup-v3.2.1-beta.exe`。
 2. 保持默认安装目录 `D:\YOLOTeamTrainingPlatform`，点击安装。
 3. 安装器自动准备 .NET、WebView2、Python、PyTorch、ONNX Runtime 和平台依赖。
 4. 安装完成后从桌面打开“YOLO团队训练平台”。
@@ -29,7 +29,7 @@ YOLO团队训练平台是一个面向 Windows、Ubuntu 和多种边缘部署平�
 - `开启局域网协作标注.cmd`：让伙伴通过浏览器协作。
 - `关闭协作标注中心.cmd`：停止标注服务，不删除数据。
 
-网页地址固定为：<http://127.0.0.1:8989/>
+网页模式默认使用 <http://127.0.0.1:8989/>。Windows 桌面版检测到已有 YOLO 训练面板时，会询问是否关闭旧服务；选择“否”会保留旧服务并退出，绝不会同时启动第二个训练面板。若默认端口仅被其他软件占用，桌面版会使用其他仅限本机访问的端口。实际地址记录在 `Workspace/logs/launcher.log`。
 
 ## Ubuntu 部署
 
@@ -60,7 +60,7 @@ Ubuntu 上访问：<http://127.0.0.1:8989/>。如果要从其他电脑访问，�
 维护者运行 `installer/windows/build-installer.ps1`，程序会在 `dist` 文件夹生成：
 
 ```text
-YOLO-Team-Training-Platform-Setup-v3.2.0-beta.exe
+YOLO-Team-Training-Platform-Setup-v3.2.1-beta.exe
 ```
 
 安装器不会打包本机 Workspace、私人路径、训练数据、日志和训练结果。

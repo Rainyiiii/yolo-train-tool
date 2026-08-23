@@ -19,7 +19,7 @@ yolo-train-tool/
 └─ install_runtime.ps1                        Windows 运行环境安装逻辑
 ```
 
-`desktop` 不是另一套业务实现。它负责启动本地 Python 服务，并通过 WebView2 安全加载 `127.0.0.1:8989`；训练、标注和导出逻辑只有一份，浏览器模式、WebView2 模式共用。
+`desktop` 不是另一套业务实现。它负责执行桌面单实例和训练面板单服务检查、启动本地 Python 服务，并通过 WebView2 安全加载回环地址。默认端口为 `127.0.0.1:8989`；已有 YOLO 服务必须由用户确认关闭，其他软件造成的端口冲突才回退到其他本机端口。训练、标注和导出逻辑只有一份，浏览器模式、WebView2 模式共用。
 
 ## 本地验证
 
@@ -35,6 +35,6 @@ yolo-train-tool/
 1. 更新 `VERSION.txt`、`CHANGELOG.md` 和用户文档。
 2. 在 Windows 上通过测试并本地构建一次 Setup。
 3. 推送源码提交。
-4. 创建与版本一致的标签，例如 `v3.2.0-beta`。
+4. 创建与版本一致的标签，例如 `v3.2.1-beta`。
 5. 等待 GitHub Actions 成功，核对 Release 中的安装器。
 6. 发布标签前复核 `LICENSE` 与第三方声明，并确认 Windows 代码签名 secrets 已配置。
