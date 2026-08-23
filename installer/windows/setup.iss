@@ -46,11 +46,83 @@ Filename: "{app}\Desktop\YOLOTeamTrainingPlatform.exe"; Description: "启动 {#P
 Filename: "{app}\Runtime\Python\Scripts\python.exe"; Parameters: """{app}\App\annotation_service.py"" stop"; Flags: runhidden waituntilterminated skipifdoesntexist; RunOnceId: "StopAnnotationService"
 Filename: "{app}\Runtime\Python\Scripts\python.exe"; Parameters: """{app}\App\panel_service.py"" stop"; Flags: runhidden waituntilterminated skipifdoesntexist; RunOnceId: "StopPanelService"
 
+[UninstallDelete]
+; Only remove directories owned by this product under the actual {app} path.
+; Never use an {app}\* wildcard: unknown files at the install root are preserved.
+Type: filesandordirs; Name: "{app}\Runtime"
+Type: filesandordirs; Name: "{app}\App"
+Type: filesandordirs; Name: "{app}\Desktop"
+Type: dirifempty; Name: "{app}"
+
 [Code]
 var
   RuntimeReady: Boolean;
   RuntimeProgressPage: TOutputMarqueeProgressWizardPage;
   RuntimeLogMemo: TNewMemo;
+  DeleteWorkspaceOnUninstall: Boolean;
+  WorkspaceChoiceMade: Boolean;
+
+function HasCommandLineSwitch(const SwitchName: String): Boolean;
+var
+  I: Integer;
+begin
+  Result := False;
+  for I := 1 to ParamCount do
+    if CompareText(ParamStr(I), SwitchName) = 0 then begin
+      Result := True;
+      exit;
+    end;
+end;
+
+procedure SelectWorkspaceUninstallPolicy;
+begin
+  if WorkspaceChoiceMade then
+    exit;
+
+  WorkspaceChoiceMade := True;
+  if HasCommandLineSwitch('/PURGEDATA') then
+    DeleteWorkspaceOnUninstall := True
+  else if HasCommandLineSwitch('/KEEPDATA') or UninstallSilent then
+    DeleteWorkspaceOnUninstall := False
+  else
+    DeleteWorkspaceOnUninstall := SuppressibleMsgBox(
+      '是否保留 Workspace 中的用户数据？' + #13#10 + #13#10 +
+      '选择“是”：保留数据集、标注、训练模型、导出结果和个人配置。' + #13#10 +
+      '选择“否”：彻底删除本次安装目录内的程序和所有用户数据。',
+      mbConfirmation, MB_YESNO, IDYES) = IDNO;
+
+  if DeleteWorkspaceOnUninstall then
+    Log('Workspace uninstall policy: delete')
+  else
+    Log('Workspace uninstall policy: preserve');
+end;
+
+procedure PurgeWorkspace;
+var
+  InstallRoot: String;
+  WorkspaceRoot: String;
+begin
+  InstallRoot := RemoveBackslashUnlessRoot(ExpandConstant('{app}'));
+  WorkspaceRoot := PathCombine(InstallRoot, 'Workspace');
+  if not PathSame(ExtractFileDir(WorkspaceRoot), InstallRoot) then begin
+    Log('Refusing to delete unexpected Workspace path: ' + WorkspaceRoot);
+    exit;
+  end;
+
+  Log('Deleting Workspace: ' + WorkspaceRoot);
+  if DirExists(WorkspaceRoot) and not DelTree(WorkspaceRoot, True, True, True) then
+    Log('Workspace could not be deleted completely: ' + WorkspaceRoot);
+  if DirExists(InstallRoot) and not RemoveDir(InstallRoot) then
+    Log('Install root retained because it contains unknown files: ' + InstallRoot);
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usUninstall then
+    SelectWorkspaceUninstallPolicy
+  else if (CurUninstallStep = usPostUninstall) and DeleteWorkspaceOnUninstall then
+    PurgeWorkspace;
+end;
 
 procedure InitializeWizard;
 begin

@@ -1,5 +1,12 @@
 # 更新记录
 
+## 3.0.2-beta
+
+- 修复卸载后残留 Python、PyTorch、ONNX Runtime 和 Python 缓存的问题。
+- 卸载时始终清理当前实际安装目录下的 `App`、`Desktop` 和 `Runtime`，不使用安装根目录通配删除。
+- 交互卸载增加 Workspace 用户数据保留选项；静默卸载默认保留数据，也可使用 `/PURGEDATA` 明确彻底删除。
+- 仅在安装目录为空时删除安装根目录，未知文件和安装目录之外的内容不会被处理。
+
 ## 3.0.1-beta
 
 - 修复 Windows PowerShell 5.1 将 UTF-8 中文安装脚本错误解码后导致运行环境安装中断的问题。

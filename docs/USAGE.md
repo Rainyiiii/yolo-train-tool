@@ -16,7 +16,7 @@ cd yolo-train-tool
 普通队友直接双击发布页中的安装器：
 
 ```text
-YOLO-Team-Training-Platform-Setup-v3.0.1-beta.exe
+YOLO-Team-Training-Platform-Setup-v3.0.2-beta.exe
 ```
 
 安装器会自动：
