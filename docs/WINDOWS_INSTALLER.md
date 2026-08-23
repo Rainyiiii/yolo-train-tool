@@ -33,4 +33,6 @@ WebView2 桌面程序只加载本机 `127.0.0.1:8989` 平台页面；外部文�
 
 生成文件位于 `dist/`。脚本会从微软官方下载并缓存 .NET Desktop Runtime 与 WebView2 Evergreen Bootstrapper。
 
+推送 `v*` 版本标签后，GitHub Actions 会执行同一个构建脚本，将 Setup 保存为工作流产物并自动创建 GitHub Release。应用源码、Python 核心源码和安装器源码始终保留在同一仓库、同一提交中。
+
 公开发布前必须为 Setup 和桌面 EXE 配置可信代码签名证书。未签名安装器可能触发 Windows SmartScreen；当前仓库不会伪造或绕过该提示。

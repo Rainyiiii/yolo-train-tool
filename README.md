@@ -1,8 +1,15 @@
 # YOLO团队训练平台
 
+[![Windows Installer](https://github.com/Rainyiiii/yolo-train-tool/actions/workflows/windows-installer.yml/badge.svg)](https://github.com/Rainyiiii/yolo-train-tool/actions/workflows/windows-installer.yml)
+[![Latest Release](https://img.shields.io/github/v/release/Rainyiiii/yolo-train-tool?include_prereleases&label=release)](https://github.com/Rainyiiii/yolo-train-tool/releases)
+
 YOLO团队训练平台是一个面向 Windows、Ubuntu 和多种边缘部署平台的本地优先训练工具，把协作标注、数据检查、模型训练、模型资产、多平台导出和测试连接起来。每台电脑都能独立工作，也能临时成为局域网团队主机；部署端通过设备配置档适配树莓派、Rockchip/香橙派、地瓜机器人 RDK、MaixCAM、NVIDIA Jetson、Intel OpenVINO 等运行时。
 
 > 当前仍处于公开发布前的工程化阶段。设备配置档表示“已有导出路线”，不等于所有板卡均已完成真机验证；请查看[设备适配文档](docs/DEVICE_ADAPTERS.md)。
+
+## 下载应用
+
+普通用户请从 [GitHub Releases](https://github.com/Rainyiiii/yolo-train-tool/releases) 下载最新版 Windows 安装器。仓库同时保留桌面应用、Python 训练/标注核心和安装器的完整源码，两种使用方式对应同一套功能和版本。
 
 ## 队友第一次使用
 
@@ -59,11 +66,26 @@ YOLO-Team-Training-Platform-Setup-v3.0.0-beta.exe
 
 安装器不会打包本机 Workspace、私人路径、训练数据、日志和训练结果。
 
+## 应用源码与核心源码
+
+本项目采用单仓库共存方式：
+
+| 目录/文件 | 内容 |
+| --- | --- |
+| `desktop/YOLOTeamTrainingPlatform.Desktop/` | WebView2 Windows 应用源码 |
+| `installer/windows/` | 一键安装器及自动构建源码 |
+| `train_panel.py`、`annotation_*.py` | 训练平台与协作标注核心 |
+| `host_train_export.py`、`export_model.py` | 训练和多设备模型导出 |
+| `tests/` | 自动测试 |
+
+WebView2 只是桌面承载层，不复制训练逻辑；桌面应用与浏览器模式共享同一个本地服务。详细说明见[开发与仓库结构](docs/DEVELOPMENT.md)。
+
 ## GitHub 文档
 
 - [兼容性说明](docs/COMPATIBILITY.md)：系统、Python、GPU、依赖和已知限制。
 - [目录与命名规范](docs/DIRECTORY_AND_NAMING_STANDARD.md)：安装布局、工作区和所有新资产命名。
 - [Windows WebView2 安装与发布](docs/WINDOWS_INSTALLER.md)：一键安装、运行时依赖和维护者构建。
+- [开发与仓库结构](docs/DEVELOPMENT.md)：应用源码、Python 核心和 GitHub 自动发布方式。
 - [使用说明](docs/USAGE.md)：Windows/Ubuntu 安装、训练、测试、导出和排错。
 - [设备适配与模型导出](docs/DEVICE_ADAPTERS.md)：树莓派、Rockchip、RDK、MaixCAM、Jetson、OpenVINO。
 - [数据集与模型资产](docs/MODEL_ASSETS.md)：规范训练清单和测试/部署快捷操作。

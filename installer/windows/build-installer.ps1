@@ -44,6 +44,8 @@ if (Test-Path -LiteralPath $bundledModel) { Copy-Item -LiteralPath $bundledModel
 
 $dotnet = Join-Path $env:ProgramFiles "dotnet\dotnet.exe"
 if (!(Test-Path -LiteralPath $dotnet)) { throw "未找到 .NET 8 SDK。" }
+& $dotnet restore $Project
+if ($LASTEXITCODE -ne 0) { throw "WebView2 桌面程序依赖还原失败。" }
 & $dotnet publish $Project -c $Configuration --no-restore --self-contained false -o $DesktopStage
 if ($LASTEXITCODE -ne 0) { throw "WebView2 桌面程序发布失败。" }
 
