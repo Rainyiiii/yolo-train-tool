@@ -8,9 +8,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+from platform_paths import LOG_DIR, PRODUCT_NAME
 
 ROOT = Path(__file__).resolve().parent
-REPORT_PATH = ROOT / "logs" / "system_check.json"
+REPORT_PATH = LOG_DIR / "system-check.json"
 
 
 def module_status(name: str) -> dict[str, object]:
@@ -74,7 +75,7 @@ def build_report() -> dict[str, object]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Check whether MyAutoTrain is ready.")
+    parser = argparse.ArgumentParser(description=f"Check whether {PRODUCT_NAME} is ready.")
     parser.add_argument("--write-report", action="store_true")
     args = parser.parse_args()
     report = build_report()

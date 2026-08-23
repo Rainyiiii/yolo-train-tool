@@ -1,9 +1,9 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-title MyAutoTrain Installer
+title YOLO Team Training Platform Installer
 
-echo MyAutoTrain is preparing this computer...
+echo YOLO Team Training Platform is preparing this computer...
 echo This may take several minutes on first use.
 echo.
 
@@ -12,7 +12,7 @@ set "EXIT_CODE=%ERRORLEVEL%"
 
 if not "%EXIT_CODE%"=="0" (
   echo.
-  echo Installation did not finish. See logs\install.log
+  echo Installation did not finish. See workspace\logs\installation.log
   pause
 )
 exit /b %EXIT_CODE%

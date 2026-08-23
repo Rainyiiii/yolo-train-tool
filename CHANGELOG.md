@@ -1,5 +1,15 @@
 # 更新记录
 
+## 3.0.0-beta
+
+- 平台统一更名为“YOLO团队训练平台”。
+- 增加 WebView2 Windows 桌面封装和 Inno Setup 一键安装器，默认安装到 `D:\YOLOTeamTrainingPlatform`。
+- Windows 自动准备 .NET、WebView2、Python 3.10–3.14、PyTorch、ONNX Runtime 和全部平台依赖。
+- 建立统一 `Workspace` 布局与不可覆盖的训练、导出、测试和项目包命名规范。
+- 模型资产仅接受带 `training-manifest.json` 的可追溯训练记录，不再推断或迁移旧训练目录。
+- 协作标注项目包升级为 `.ytp-project.zip`，并统一数据集导出清单。
+- Ubuntu 安装与运行路径同步采用新版 Workspace 规范。
+
 ## 2.3.0-beta
 
 - 增加不依赖 Docker 的本地优先协作标注中心。

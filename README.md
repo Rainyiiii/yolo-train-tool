@@ -1,20 +1,21 @@
-# MyAutoTrain
+# YOLO团队训练平台
 
-MyAutoTrain 是一个面向 Windows、Ubuntu 和多种边缘部署平台的 YOLO 训练工具，把本地协作标注、数据检查、模型训练、模型资产追踪、多平台导出和测试连接起来。每台电脑都能独立标注，也能临时成为局域网团队主机；训练端负责生成通用模型，部署端通过设备配置档适配树莓派、Rockchip/香橙派、地瓜机器人 RDK、MaixCAM、NVIDIA Jetson、Intel OpenVINO 等运行时。
+YOLO团队训练平台是一个面向 Windows、Ubuntu 和多种边缘部署平台的本地优先训练工具，把协作标注、数据检查、模型训练、模型资产、多平台导出和测试连接起来。每台电脑都能独立工作，也能临时成为局域网团队主机；部署端通过设备配置档适配树莓派、Rockchip/香橙派、地瓜机器人 RDK、MaixCAM、NVIDIA Jetson、Intel OpenVINO 等运行时。
 
 > 当前仍处于公开发布前的工程化阶段。设备配置档表示“已有导出路线”，不等于所有板卡均已完成真机验证；请查看[设备适配文档](docs/DEVICE_ADAPTERS.md)。
 
 ## 队友第一次使用
 
-1. 解压收到的 ZIP 文件。不要直接在压缩包预览窗口里运行。
-2. 双击 `一键安装并启动.cmd`。
-3. 等待自动安装完成，网页会自动打开。
-4. 点击“导入下载的数据集”，选择包含 `data.yaml` 的最外层目录；也可继续手动选择图片与 XML。
-5. 选择 `640×480 推荐`，点击“检查并开始训练”。
+1. 双击 `YOLO-Team-Training-Platform-Setup-v3.0.0-beta.exe`。
+2. 保持默认安装目录 `D:\YOLOTeamTrainingPlatform`，点击安装。
+3. 安装器自动准备 .NET、WebView2、Python、PyTorch、ONNX Runtime 和平台依赖。
+4. 安装完成后从桌面打开“YOLO团队训练平台”。
+5. 点击“导入下载的数据集”，选择包含 `data.yaml` 的最外层目录；也可继续手动选择图片与 XML。
+6. 选择 `640×480 推荐`，点击“检查并开始训练”。
 
-第一次安装需要下载 Python、PyTorch 和训练组件，所需时间取决于网络速度。安装记录保存在 `logs/install.log`。
+第一次安装需要联网下载训练组件，所需时间取决于网络速度。安装记录保存在 `D:\YOLOTeamTrainingPlatform\Workspace\logs\installation.log`。
 
-以后只需双击：
+开发源码模式仍保留以下脚本：
 
 - `启动训练面板.cmd`：打开平台。
 - `关闭训练面板.cmd`：关闭平台，不会删除数据或模型。
@@ -29,7 +30,7 @@ MyAutoTrain 是一个面向 Windows、Ubuntu 和多种边缘部署平台的 YOLO
 Ubuntu 22.04/24.04 建议使用 Bash 运行。部署工具支持 Python 3.10–3.14，会自动判断 NVIDIA GPU，安装对应的 CUDA 12.8 或 CPU 版 PyTorch，并安装包括 `onnxruntime` 在内的项目依赖。
 
 ```bash
-cd MyAutoTrain-日期时间
+cd yolo-train-tool
 bash ubuntu_install_and_start.sh
 ```
 
@@ -50,20 +51,22 @@ Ubuntu 上访问：<http://127.0.0.1:8989/>。如果要从其他电脑访问，�
 
 ## 发给队友
 
-维护者双击 `制作队友部署包.cmd`，程序会在 `dist` 文件夹生成：
+维护者运行 `installer/windows/build-installer.ps1`，程序会在 `dist` 文件夹生成：
 
 ```text
-MyAutoTrain-日期时间.zip
+YOLO-Team-Training-Platform-Setup-v3.0.0-beta.exe
 ```
 
-分享包会自动排除本机虚拟环境、私人路径配置、训练数据、模型权重、日志和训练结果，避免把个人文件发给队友。
+安装器不会打包本机 Workspace、私人路径、训练数据、日志和训练结果。
 
 ## GitHub 文档
 
 - [兼容性说明](docs/COMPATIBILITY.md)：系统、Python、GPU、依赖和已知限制。
+- [目录与命名规范](docs/DIRECTORY_AND_NAMING_STANDARD.md)：安装布局、工作区和所有新资产命名。
+- [Windows WebView2 安装与发布](docs/WINDOWS_INSTALLER.md)：一键安装、运行时依赖和维护者构建。
 - [使用说明](docs/USAGE.md)：Windows/Ubuntu 安装、训练、测试、导出和排错。
 - [设备适配与模型导出](docs/DEVICE_ADAPTERS.md)：树莓派、Rockchip、RDK、MaixCAM、Jetson、OpenVINO。
-- [数据集与模型资产](docs/MODEL_ASSETS.md)：训练清单、历史输出扫描和测试/部署快捷操作。
+- [数据集与模型资产](docs/MODEL_ASSETS.md)：规范训练清单和测试/部署快捷操作。
 - [本地优先协作标注](docs/COLLABORATIVE_ANNOTATION.md)：个人/共享模式、账号任务、审核、项目包和数据集导出。
 - [半自动标注说明](docs/SEMI_AUTO_LABELING.md)：质量检查、复核流程和已知边界。
 - [优化路线图](docs/ROADMAP.md)：公开发布前、设备适配、数据与工程化计划。
@@ -127,7 +130,7 @@ dataset/
 
 ### 3. 停止训练
 
-点击“停止训练并导出最佳模型”。系统会停止训练并保留当前 `best.pt`，不会擅自替用户提前停止。
+点击“停止训练并导出最佳模型”。系统会停止训练并把当前最佳权重归档为 `model-best.pt`，不会擅自替用户提前停止。
 
 ### 4. 测试模型
 
@@ -135,7 +138,7 @@ dataset/
 
 ### 5. 部署到目标设备
 
-进入“部署与导出”，选择训练得到的 `best.pt` 和目标平台：
+进入“部署与导出”，选择训练资产中的 `model-best.pt` 和目标平台：
 
 | 目标 | 默认路线 |
 | --- | --- |
@@ -157,13 +160,13 @@ dataset/
 - Python：支持 3.10–3.14；电脑没有 Python 时安装器会尝试通过 winget 安装 Python 3.14。
 - 依赖包含 `onnxruntime`，用于 ONNX 模型验证；厂商转换工具链建议使用独立环境或容器。
 
-系统自检报告保存在 `logs/system_check.json`。
+系统自检报告保存在 `workspace/logs/system-check.json`。
 
 ## 常见问题
 
 ### 双击后没有网页
 
-再次双击 `启动训练面板.cmd`，或手动访问 <http://127.0.0.1:8989/>。仍打不开时查看 `logs/launcher.log` 和 `logs/panel.log`。
+再次双击 `启动训练面板.cmd`，或手动访问 <http://127.0.0.1:8989/>。仍打不开时查看 `workspace/logs/launcher.log` 和 `workspace/logs/panel.log`。
 
 ### 安装中断
 
@@ -207,4 +210,4 @@ device_profiles.py       设备配置档
 export_model.py          多平台模型导出
 ```
 
-用户路径保存在 `train_panel_defaults.json`，该文件不会进入团队分享包。
+用户设置保存在 `Workspace/config/settings.json`，该文件不会进入安装器或 Git 仓库。

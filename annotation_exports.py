@@ -17,6 +17,7 @@ from typing import Any
 from PIL import Image, UnidentifiedImageError
 
 from annotation_store import IMAGE_EXTENSIONS, AnnotationError, AnnotationStore, _json, _now
+from platform_paths import local_timestamp, safe_identifier
 
 
 EXPORT_FORMATS = {"yolo", "coco", "voc", "labelme", "project"}
@@ -53,7 +54,7 @@ def _add_image(archive: zipfile.ZipFile, item: dict[str, Any], target: str) -> N
 def _manifest(project: dict[str, Any], items: list[dict[str, Any]], version: str, export_format: str) -> dict[str, Any]:
     return {
         "schema_version": 1,
-        "kind": "myautotrain_dataset_export",
+        "kind": "yolo_team_dataset_export",
         "project": {"id": project["id"], "name": project["name"], "task_type": project["task_type"], "labels": project["labels"]},
         "dataset_version": version,
         "format": export_format,
@@ -71,9 +72,11 @@ def export_dataset(store: AnnotationStore, actor: dict[str, Any], project_id: in
         return export_project_package(store, actor, project_id)
     project, items = store.export_rows(project_id, actor)
     version = store.dataset_version(project, items)
-    stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-    base = _safe_name(project["name"], f"project_{project_id}")
-    output = store.exports_dir / f"{base}_{version}_{export_format}_{stamp}.zip"
+    stamp = local_timestamp()
+    base = safe_identifier(project["name"], f"project-{project_id}")
+    project_export_dir = store.exports_dir / base
+    project_export_dir.mkdir(parents=True, exist_ok=True)
+    output = project_export_dir / f"{base}__dataset__{export_format}__v{version}__{stamp}.zip"
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
         if export_format == "yolo":
             _export_yolo(archive, project, items)
@@ -83,7 +86,7 @@ def export_dataset(store: AnnotationStore, actor: dict[str, Any], project_id: in
             _export_voc(archive, project, items)
         else:
             _export_labelme(archive, project, items)
-        _write_text(archive, "myautotrain_export_manifest.json", json.dumps(_manifest(project, items, version, export_format), ensure_ascii=False, indent=2) + "\n")
+        _write_text(archive, "dataset-manifest.json", json.dumps(_manifest(project, items, version, export_format), ensure_ascii=False, indent=2) + "\n")
     return output
 
 
@@ -203,8 +206,11 @@ def export_project_package(store: AnnotationStore, actor: dict[str, Any], projec
         item["path"] = store.projects_dir / str(project_id) / "images" / item["stored_name"]
         items.append(item)
     version = store.dataset_version(project, items)
-    stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-    output = store.exports_dir / f"{_safe_name(project['name'], 'project')}_{version}_{stamp}.matproj.zip"
+    stamp = local_timestamp()
+    project_slug = safe_identifier(project["name"], "project")
+    project_export_dir = store.exports_dir / project_slug
+    project_export_dir.mkdir(parents=True, exist_ok=True)
+    output = project_export_dir / f"{project_slug}__annotation-project__v{version}__{stamp}.ytp-project.zip"
     manifest_items = []
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
         for item in items:
@@ -224,13 +230,13 @@ def export_project_package(store: AnnotationStore, actor: dict[str, Any], projec
             })
         manifest = {
             "schema_version": 1,
-            "kind": "myautotrain_annotation_project",
+            "kind": "yolo_team_annotation_project",
             "project": {"name": project["name"], "task_type": project["task_type"], "labels": project["labels"]},
             "dataset_version": version,
             "created_at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
             "items": manifest_items,
         }
-        _write_text(archive, "project_manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
+        _write_text(archive, "project-manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
     return output
 
 
@@ -239,17 +245,17 @@ def import_project_package(store: AnnotationStore, actor: dict[str, Any], packag
         raise AnnotationError("只有管理员或审核员可以导入项目包。", 403)
     package = Path(package_path).expanduser().resolve()
     if not package.is_file() or package.suffix.lower() != ".zip":
-        raise AnnotationError("请选择有效的 .matproj.zip 项目包。")
+        raise AnnotationError("请选择有效的 .ytp-project.zip 项目包。")
     try:
         archive = zipfile.ZipFile(package, "r")
     except zipfile.BadZipFile as exc:
         raise AnnotationError("项目包不是有效的 ZIP 文件。") from exc
     with archive:
         try:
-            manifest = json.loads(archive.read("project_manifest.json").decode("utf-8-sig"))
+            manifest = json.loads(archive.read("project-manifest.json").decode("utf-8-sig"))
         except (KeyError, ValueError, UnicodeError) as exc:
-            raise AnnotationError("项目包缺少有效的 project_manifest.json。") from exc
-        if manifest.get("kind") != "myautotrain_annotation_project" or manifest.get("schema_version") != 1:
+            raise AnnotationError("项目包缺少有效的 project-manifest.json。") from exc
+        if manifest.get("kind") != "yolo_team_annotation_project" or manifest.get("schema_version") != 1:
             raise AnnotationError("项目包版本不受支持。")
         project_data = manifest.get("project") if isinstance(manifest.get("project"), dict) else {}
         labels = [str(value).strip() for value in project_data.get("labels", []) if str(value).strip()]

@@ -14,24 +14,24 @@ class ModelAssetsTest(unittest.TestCase):
             root = Path(tmp)
             dataset_root = root / "factory_dataset"
             images = dataset_root / "images"
-            output = dataset_root / "outputs_20260823_120000"
+            output = root / "training-runs" / "widgets" / "widgets__widget__train__20260823-120000"
             run_dir = root / "run"
             images.mkdir(parents=True)
             output.mkdir(parents=True)
             run_dir.mkdir()
             training_image = images / "sample.jpg"
             training_image.write_bytes(b"image")
-            (output / "widget.pt").write_bytes(b"pt")
-            (output / "widget.onnx").write_bytes(b"onnx")
-            (output / "classes.txt").write_text("good\ndefect\n", encoding="utf-8")
-            (output / "results.csv").write_text("epoch,metrics/mAP50(B)\n4,0.812\n", encoding="utf-8")
+            (output / "model-best.pt").write_bytes(b"pt")
+            (output / "model-best.onnx").write_bytes(b"onnx")
+            (output / "dataset-classes.txt").write_text("good\ndefect\n", encoding="utf-8")
+            (output / "training-metrics.csv").write_text("epoch,metrics/mAP50(B)\n4,0.812\n", encoding="utf-8")
             args = argparse.Namespace(
                 stop_export_signal="", train_task="detect", project_name="widgets",
                 model_name="widget", base_model="yolo11n.pt", img_height=480, img_width=640,
                 epochs=5, batch=8, workers=2, lr0=0.005, train_device="cpu", train_mode="local",
             )
             training_manifest = write_training_manifest(
-                args, output, "20260823_120000", dataset_root, images, run_dir,
+                args, output, "20260823-120000", dataset_root, images, run_dir,
                 training_images=[training_image],
             )
             deploy_dir = root / "deploy"
@@ -44,10 +44,10 @@ class ModelAssetsTest(unittest.TestCase):
                 "target_label": "树莓派（CPU）",
                 "format": "ncnn",
                 "chip": None,
-                "source_model": str(output / "widget.pt"),
+                "source_model": str(output / "model-best.pt"),
                 "artifact": str(deployed),
             }, ensure_ascii=False), encoding="utf-8")
-            registry = root / "model_registry.json"
+            registry = root / "model-registry.json"
             register_asset_manifest(registry, training_manifest)
             register_asset_manifest(registry, deployment_manifest)
 
@@ -65,21 +65,19 @@ class ModelAssetsTest(unittest.TestCase):
             self.assertEqual(run["metrics"]["metrics/mAP50(B)"], 0.812)
             self.assertEqual(run["deployments"][0]["format"], "ncnn")
 
-    def test_old_output_is_visible_as_inferred_association(self):
+    def test_directory_without_manifest_is_not_indexed(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp) / "legacy_dataset"
-            output = root / "outputs_20250102_030405"
+            root = Path(tmp) / "training-runs"
+            output = root / "project" / "unmanaged-run"
             output.mkdir(parents=True)
             (output / "legacy.pt").write_bytes(b"pt")
             (output / "classes.txt").write_text("object\n", encoding="utf-8")
-            registry = Path(tmp) / "model_registry.json"
+            registry = Path(tmp) / "model-registry.json"
             register_asset_root(registry, root)
 
             catalog = collect_model_assets(registry)
-            run = catalog["datasets"][0]["runs"][0]
-            self.assertEqual(run["association"], "inferred")
-            self.assertEqual(run["model_name"], "legacy")
-            self.assertEqual(run["classes"], ["object"])
+            self.assertEqual(catalog["summary"]["run_count"], 0)
+            self.assertEqual(catalog["datasets"], [])
 
 
 if __name__ == "__main__":

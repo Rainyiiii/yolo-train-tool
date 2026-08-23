@@ -3,7 +3,7 @@ setlocal
 cd /d "%~dp0"
 
 set "PS_EXE=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
-set "LOG_DIR=%~dp0logs"
+set "LOG_DIR=%~dp0workspace\logs"
 set "LOG_FILE=%LOG_DIR%\stop_launcher.log"
 
 if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
@@ -20,7 +20,7 @@ set "EXIT_CODE=%ERRORLEVEL%"
 
 if not "%EXIT_CODE%"=="0" (
   echo.
-  echo MyAutoTrain failed to stop.
+  echo YOLO Team Training Platform failed to stop.
   echo Log: %LOG_FILE%
   echo.
   type "%LOG_FILE%"
@@ -29,5 +29,5 @@ if not "%EXIT_CODE%"=="0" (
   exit /b %EXIT_CODE%
 )
 
-echo MyAutoTrain has stopped.
+echo YOLO Team Training Platform has stopped.
 exit /b 0

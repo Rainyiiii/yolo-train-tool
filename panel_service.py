@@ -13,14 +13,16 @@ from pathlib import Path
 
 import psutil
 
+from platform_paths import LOG_DIR, PRODUCT_NAME, STATE_DIR, ensure_workspace
+
 
 ROOT = Path(__file__).resolve().parent
+ensure_workspace()
 PANEL_SCRIPT = ROOT / "train_panel.py"
-PID_FILE = ROOT / ".train_panel.pid.json"
-LOG_DIR = ROOT / "logs"
+PID_FILE = STATE_DIR / "panel-service.json"
 LOG_FILE = LOG_DIR / "panel.log"
 PANEL_URL = "http://127.0.0.1:8989/"
-PANEL_MARKER = "MyAutoTrain 多平台模型训练工具"
+PANEL_MARKER = PRODUCT_NAME
 
 
 def read_pid_record() -> dict[str, object] | None:
@@ -111,7 +113,7 @@ def log_tail(max_lines: int = 20) -> str:
 def start_panel(no_browser: bool = False) -> int:
     process = managed_process()
     if process and panel_ready():
-        print(f"MyAutoTrain is already running (PID {process.pid}).")
+        print(f"{PRODUCT_NAME} 已在运行（PID {process.pid}）。")
         print(PANEL_URL)
         if not no_browser:
             webbrowser.open(PANEL_URL)
@@ -122,13 +124,13 @@ def start_panel(no_browser: bool = False) -> int:
         process = discover_panel_process()
         if process:
             write_pid_record(process)
-            print(f"Attached to the running MyAutoTrain panel (PID {process.pid}).")
+            print(f"已接管正在运行的 {PRODUCT_NAME}（PID {process.pid}）。")
             print(PANEL_URL)
             if not no_browser:
                 webbrowser.open(PANEL_URL)
             return 0
-        print("Port 8989 already hosts MyAutoTrain, but its process could not be identified.")
-        print("Close the old instance in Task Manager, then run the start script again.")
+        print(f"8989 端口已有 {PRODUCT_NAME} 页面，但无法识别对应进程。")
+        print("请在任务管理器中关闭旧实例后重试。")
         return 2
 
     if not PANEL_SCRIPT.exists():
@@ -145,7 +147,7 @@ def start_panel(no_browser: bool = False) -> int:
         )
 
     with LOG_FILE.open("a", encoding="utf-8") as log:
-        log.write(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] Starting MyAutoTrain\n")
+        log.write(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] Starting {PRODUCT_NAME}\n")
         log.flush()
         process_handle = subprocess.Popen(
             [
@@ -173,13 +175,13 @@ def start_panel(no_browser: bool = False) -> int:
     while time.monotonic() < deadline:
         if process_handle.poll() is not None:
             remove_pid_file()
-            print("MyAutoTrain exited during startup.", file=sys.stderr)
+            print(f"{PRODUCT_NAME} 在启动过程中退出。", file=sys.stderr)
             tail = log_tail()
             if tail:
                 print(tail, file=sys.stderr)
             return 1
         if panel_ready():
-            print(f"MyAutoTrain started successfully (PID {process.pid}).")
+            print(f"{PRODUCT_NAME} 启动成功（PID {process.pid}）。")
             print(PANEL_URL)
             if not no_browser:
                 webbrowser.open(PANEL_URL)
@@ -192,7 +194,7 @@ def start_panel(no_browser: bool = False) -> int:
     except psutil.Error:
         pass
     remove_pid_file()
-    print("MyAutoTrain startup timed out after 20 seconds.", file=sys.stderr)
+    print(f"{PRODUCT_NAME} 启动等待超过 20 秒。", file=sys.stderr)
     tail = log_tail()
     if tail:
         print(tail, file=sys.stderr)
@@ -209,10 +211,10 @@ def stop_panel() -> int:
             if process:
                 write_pid_record(process)
             else:
-                print("MyAutoTrain is reachable, but its process could not be identified.", file=sys.stderr)
+                print(f"{PRODUCT_NAME} 可以访问，但无法识别对应进程。", file=sys.stderr)
                 return 2
         else:
-            print("MyAutoTrain is not running.")
+            print(f"{PRODUCT_NAME} 没有运行。")
             return 0
 
     if process is None:
@@ -230,25 +232,25 @@ def stop_panel() -> int:
     finally:
         remove_pid_file()
 
-    print(f"MyAutoTrain stopped (PID {pid}).")
+    print(f"{PRODUCT_NAME} 已停止（PID {pid}）。")
     return 0
 
 
 def show_status() -> int:
     process = managed_process()
     if process and panel_ready():
-        print(f"MyAutoTrain is running (PID {process.pid}).")
+        print(f"{PRODUCT_NAME} 正在运行（PID {process.pid}）。")
         print(PANEL_URL)
         return 0
     if panel_ready():
-        print("MyAutoTrain is running, but it is not managed by the launcher.")
+        print(f"{PRODUCT_NAME} 正在运行，但不是由当前启动器管理。")
         return 2
-    print("MyAutoTrain is stopped.")
+    print(f"{PRODUCT_NAME} 已停止。")
     return 1
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Manage the local MyAutoTrain panel.")
+    parser = argparse.ArgumentParser(description=f"Manage the local {PRODUCT_NAME} panel.")
     subparsers = parser.add_subparsers(dest="command", required=True)
     start_parser = subparsers.add_parser("start")
     start_parser.add_argument("--no-browser", action="store_true")

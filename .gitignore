@@ -11,6 +11,7 @@ model_registry.json
 .train_panel.pid.json
 .annotation_server.pid.json
 annotation_workspace/
+workspace/
 config/
 cache/
 jobs/
@@ -40,3 +41,5 @@ dist/
 Thumbs.db
 .idea/
 .vscode/
+desktop/**/bin/
+desktop/**/obj/

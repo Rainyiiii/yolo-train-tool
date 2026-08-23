@@ -61,6 +61,7 @@ class AnnotationCollaborationTest(unittest.TestCase):
         item = self.store.acquire_item(self.store.list_items(self.project["id"], self.annotator)[0]["id"], self.annotator)
         self.store.save_item(item["id"], self.annotator, [{"label": "good", "x": 1, "y": 2, "w": 20, "h": 30}], item["revision"], submit=True)
         package = export_dataset(self.store, self.admin, self.project["id"], "project")
+        self.assertTrue(package.name.endswith(".ytp-project.zip"))
 
         other_store = AnnotationStore(self.root / "other_workspace")
         other_admin = other_store.create_user("owner", "password123", "admin")
@@ -79,15 +80,15 @@ class AnnotationCollaborationTest(unittest.TestCase):
         self.assertEqual(caught.exception.status, 403)
 
     def test_unsafe_project_package_is_rejected_and_rolled_back(self):
-        package = self.root / "unsafe.matproj.zip"
+        package = self.root / "unsafe.ytp-project.zip"
         manifest = {
             "schema_version": 1,
-            "kind": "myautotrain_annotation_project",
+            "kind": "yolo_team_annotation_project",
             "project": {"name": "unsafe", "task_type": "detect", "labels": ["object"]},
             "items": [{"image": "images/../escape.jpg", "boxes": []}],
         }
         with zipfile.ZipFile(package, "w") as archive:
-            archive.writestr("project_manifest.json", json.dumps(manifest))
+            archive.writestr("project-manifest.json", json.dumps(manifest))
         before = len(self.store.list_projects(self.admin))
         with self.assertRaises(AnnotationError):
             import_project_package(self.store, self.admin, package)

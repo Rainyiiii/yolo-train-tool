@@ -2,13 +2,14 @@
 set -Eeuo pipefail
 
 SCRIPT_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-LOG_DIR="$SCRIPT_ROOT/logs"
-LOG_FILE="$LOG_DIR/install_ubuntu.log"
+WORKSPACE_ROOT="$SCRIPT_ROOT/workspace"
+LOG_DIR="$WORKSPACE_ROOT/logs"
+LOG_FILE="$LOG_DIR/installation-ubuntu.log"
 VENV_DIR="$SCRIPT_ROOT/.venv"
 VENV_PYTHON="$VENV_DIR/bin/python"
 REQUIREMENTS="$SCRIPT_ROOT/requirements.txt"
 DEFAULTS_EXAMPLE="$SCRIPT_ROOT/train_panel_defaults.example.json"
-DEFAULTS_FILE="$SCRIPT_ROOT/train_panel_defaults.json"
+DEFAULTS_FILE="$WORKSPACE_ROOT/config/settings.json"
 NO_START=0
 
 if [[ "${1:-}" == "--no-start" ]]; then
@@ -18,10 +19,16 @@ elif [[ $# -gt 0 ]]; then
     exit 2
 fi
 
-mkdir -p "$LOG_DIR"
+mkdir -p "$LOG_DIR" "$WORKSPACE_ROOT/config" "$WORKSPACE_ROOT/state" \
+    "$WORKSPACE_ROOT/datasets" "$WORKSPACE_ROOT/annotation-hub" \
+    "$WORKSPACE_ROOT/training-runs" "$WORKSPACE_ROOT/model-assets/base-models" \
+    "$WORKSPACE_ROOT/exports/datasets" "$WORKSPACE_ROOT/exports/deployments" \
+    "$WORKSPACE_ROOT/test-results" "$WORKSPACE_ROOT/cache" "$WORKSPACE_ROOT/temp" "$WORKSPACE_ROOT/backups"
+export YOLO_TEAM_PLATFORM_HOME="$SCRIPT_ROOT"
+export YOLO_TEAM_PLATFORM_DATA="$WORKSPACE_ROOT"
 exec > >(tee -a "$LOG_FILE") 2>&1
 
-echo "MyAutoTrain Ubuntu 安装器"
+echo "YOLO团队训练平台 Ubuntu 安装器"
 echo "安装目录：$SCRIPT_ROOT"
 echo "日志文件：$LOG_FILE"
 
@@ -113,12 +120,12 @@ fi
 
 "$VENV_PYTHON" -m pip install --upgrade torch torchvision torchaudio --index-url "$TORCH_INDEX_URL"
 
-echo "安装 MyAutoTrain 功能组件（包含 onnxruntime）"
+echo "安装 YOLO团队训练平台功能组件（包含 onnxruntime）"
 "$VENV_PYTHON" -m pip install --upgrade -r "$REQUIREMENTS"
 
 if [[ ! -f "$DEFAULTS_FILE" && -f "$DEFAULTS_EXAMPLE" ]]; then
     cp "$DEFAULTS_EXAMPLE" "$DEFAULTS_FILE"
-    DEFAULTS_FILE="$DEFAULTS_FILE" HAS_NVIDIA="$HAS_NVIDIA" VRAM_MB="$VRAM_MB" \
+    DEFAULTS_FILE="$DEFAULTS_FILE" WORKSPACE_ROOT="$WORKSPACE_ROOT" HAS_NVIDIA="$HAS_NVIDIA" VRAM_MB="$VRAM_MB" \
         "$VENV_PYTHON" - <<'PY'
 import json
 import os
@@ -128,6 +135,17 @@ path = Path(os.environ["DEFAULTS_FILE"])
 data = json.loads(path.read_text(encoding="utf-8"))
 has_nvidia = os.environ.get("HAS_NVIDIA") == "1"
 vram_mb = int(os.environ.get("VRAM_MB", "0") or 0)
+workspace = Path(os.environ["WORKSPACE_ROOT"])
+data.update({
+    "dataset_root": str(workspace / "datasets"),
+    "train_images_dir": str(workspace / "datasets" / "default" / "images"),
+    "train_annotations_dir": str(workspace / "datasets" / "default" / "annotations"),
+    "base_model": str(workspace / "model-assets" / "base-models" / "yolo11n.pt"),
+    "export_output_dir": str(workspace / "exports" / "deployments"),
+    "test_output_dir": str(workspace / "test-results"),
+    "label_images_dir": str(workspace / "annotation-hub" / "quick-label" / "images"),
+    "label_annotations_dir": str(workspace / "annotation-hub" / "quick-label" / "annotations"),
+})
 if has_nvidia:
     data["train_device"] = "cuda"
     data["torch_cuda"] = "cu128"
@@ -146,9 +164,10 @@ path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding=
 PY
 fi
 
-if [[ ! -f "$SCRIPT_ROOT/yolo11n.pt" ]]; then
+BASE_MODEL="$WORKSPACE_ROOT/model-assets/base-models/yolo11n.pt"
+if [[ ! -f "$BASE_MODEL" ]]; then
     echo "下载默认 YOLO11n 基础模型"
-    (cd "$SCRIPT_ROOT" && "$VENV_PYTHON" -c "from ultralytics import YOLO; YOLO('yolo11n.pt'); print('YOLO11n ready')")
+    YOLO_BASE_MODEL_DESTINATION="$BASE_MODEL" "$VENV_PYTHON" -c "import os, shutil; from pathlib import Path; from ultralytics import YOLO; model=YOLO('yolo11n.pt'); src=Path(getattr(model, 'ckpt_path', 'yolo11n.pt')).resolve(); dst=Path(os.environ['YOLO_BASE_MODEL_DESTINATION']); dst.parent.mkdir(parents=True, exist_ok=True); shutil.copy2(src, dst); print('YOLO11n ready')"
 else
     echo "默认 YOLO11n 基础模型已经就绪"
 fi
@@ -157,7 +176,7 @@ echo "执行系统自检"
 "$VENV_PYTHON" "$SCRIPT_ROOT/system_check.py" --write-report
 
 if (( NO_START == 0 )); then
-    echo "启动 MyAutoTrain"
+    echo "启动 YOLO团队训练平台"
     "$VENV_PYTHON" "$SCRIPT_ROOT/panel_service.py" start --no-browser
 else
     echo "已按 --no-start 跳过面板启动。"

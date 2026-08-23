@@ -2,7 +2,7 @@
 setlocal
 cd /d "%~dp0"
 if not exist ".venv\Scripts\python.exe" (
-  echo MyAutoTrain Python environment was not found. Run 一键安装并启动.cmd first.
+  echo YOLO Team Training Platform Python environment was not found. Run 一键安装并启动.cmd first.
   pause
   exit /b 1
 )

@@ -1,6 +1,6 @@
 # 设备适配与模型导出
 
-MyAutoTrain 的训练流程与设备转换流程相互独立。训练统一保留 `best.pt`，部署时再根据目标运行时导出；遇到必须使用厂商编译器的平台，则以固定尺寸 ONNX 作为交接格式。
+YOLO团队训练平台的训练流程与设备转换流程相互独立。训练统一保留标准模型资产，部署时再根据目标运行时导出；遇到必须使用厂商编译器的平台，则以固定尺寸 ONNX 作为交接格式。
 
 ## 当前设备配置档
 
@@ -20,7 +20,7 @@ MyAutoTrain 的训练流程与设备转换流程相互独立。训练统一保�
 
 网页进入“部署与导出”：
 
-1. 选择训练得到的 `best.pt`；训练结束后通常会自动填入。
+1. 选择训练资产中的 `model-best.pt`；训练结束后通常会自动填入。
 2. 选择目标平台，格式保留“自动推荐”即可。
 3. RKNN 等平台按需填写芯片名；INT8 必须提供 `data.yaml` 和有代表性的校准图片。
 4. 点击“生成部署模型”。输出目录中会同时生成模型和 `*.manifest.json` 部署清单。
@@ -30,7 +30,7 @@ MyAutoTrain 的训练流程与设备转换流程相互独立。训练统一保�
 
 ```bash
 python export_model.py \
-  --model runs/my_yolo_project/my_yolo_model/weights/best.pt \
+  --model workspace/training-runs/default-project/default-project__yolo-model__train__20260824-120000/model-best.pt \
   --target raspberry_pi \
   --format auto \
   --imgsz 480,640 \
@@ -41,7 +41,7 @@ Rockchip 示例：
 
 ```bash
 python export_model.py \
-  --model best.pt \
+  --model model-best.pt \
   --target rockchip_rknn \
   --chip rk3588 \
   --output-dir deploy/rk3588

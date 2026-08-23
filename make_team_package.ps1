@@ -7,8 +7,8 @@ if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
 }
 New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 
-$stamp = Get-Date -Format "yyyyMMdd_HHmm"
-$packageName = "MyAutoTrain-$stamp"
+$stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+$packageName = "YOLO-Team-Training-Platform-Source-$stamp"
 $tempBase = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
 $temporaryRoot = [IO.Path]::GetFullPath((Join-Path $tempBase $packageName))
 $zipPath = Join-Path $OutputDirectory "$packageName.zip"
@@ -51,6 +51,6 @@ if (Test-Path -LiteralPath $zipPath) { Remove-Item -LiteralPath $zipPath -Force 
 Compress-Archive -LiteralPath $temporaryRoot -DestinationPath $zipPath -CompressionLevel Optimal
 Remove-Item -LiteralPath $temporaryRoot -Recurse -Force
 
-Write-Host "部署包已生成：" -ForegroundColor Green
+Write-Host "源码包已生成：" -ForegroundColor Green
 Write-Host $zipPath
-Write-Host "解压后双击“一键安装并启动.cmd”即可。"
+Write-Host "普通队友请优先使用 dist 目录中的 Windows 安装器。"

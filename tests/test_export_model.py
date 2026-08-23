@@ -26,6 +26,9 @@ class ExportModelTest(unittest.TestCase):
             self.assertEqual(manifest["format"], "onnx")
             self.assertEqual(manifest["input_size"], [480, 640])
             self.assertEqual(manifest["target"], "generic_onnx")
+            self.assertIn("__generic-onnx__onnx__", artifact.name)
+            self.assertTrue(manifest_path.name.endswith(".manifest.json"))
+            self.assertEqual(manifest["kind"], "yolo_team_deployment_export")
 
     def test_int8_requires_calibration_data(self):
         with tempfile.TemporaryDirectory() as tmp:

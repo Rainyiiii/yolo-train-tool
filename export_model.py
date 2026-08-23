@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from device_profiles import DEVICE_PROFILES, EXPORT_FORMATS, get_device_profile, resolve_export_format
+from platform_paths import DEPLOYMENT_EXPORTS_DIR, artifact_stem, local_timestamp, safe_identifier, unique_directory
 
 
 def configure_stdio() -> None:
@@ -56,7 +57,7 @@ def load_names(data_path: str, classes_path: str = "", model_path: Path | None =
     if classes_path:
         candidates.append(Path(classes_path).expanduser().resolve())
     if model_path is not None:
-        candidates.append(model_path.parent / "classes.txt")
+        candidates.extend((model_path.parent / "dataset-classes.txt", model_path.parent / "classes.txt"))
     for path in candidates:
         if path.is_file():
             lines = [line.strip() for line in path.read_text(encoding="utf-8-sig").splitlines() if line.strip()]
@@ -65,9 +66,9 @@ def load_names(data_path: str, classes_path: str = "", model_path: Path | None =
     return {}
 
 
-def copy_export_artifact(source: Path, output_dir: Path) -> Path:
+def copy_export_artifact(source: Path, output_dir: Path, destination_name: str) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
-    destination = output_dir / source.name
+    destination = output_dir / destination_name
     if source.resolve() == destination.resolve():
         return source
     if source.is_dir():
@@ -112,7 +113,11 @@ def export_model(args: argparse.Namespace) -> tuple[Path, Path]:
     if args.int8 and not args.data:
         raise ValueError("INT8 导出需要 --data 指向 data.yaml，用于代表性校准数据。")
 
-    output_dir = Path(args.output_dir).expanduser().resolve() if args.output_dir else source.parent / "deploy"
+    output_root = Path(args.output_dir).expanduser().resolve() if args.output_dir else DEPLOYMENT_EXPORTS_DIR
+    timestamp = local_timestamp()
+    model_slug = safe_identifier(source.stem.removesuffix("-best"), "model")
+    export_stem = artifact_stem([model_slug, args.target, export_format], timestamp)
+    output_dir = unique_directory(output_root / safe_identifier(args.target, "target"), export_stem)
     names = load_names(args.data, getattr(args, "classes", ""), source)
     artifact_source = source
 
@@ -141,10 +146,16 @@ def export_model(args: argparse.Namespace) -> tuple[Path, Path]:
         if not artifact_source.exists():
             raise RuntimeError(f"导出命令已结束，但未找到产物：{artifact_source}")
 
-    artifact = copy_export_artifact(artifact_source, output_dir)
+    if artifact_source.is_dir():
+        destination_name = f"{export_stem}.{safe_identifier(export_format, 'model')}"
+    else:
+        destination_name = f"{export_stem}{artifact_source.suffix.lower()}"
+    artifact = copy_export_artifact(artifact_source, output_dir, destination_name)
     runtime_check = inspect_onnx_runtime(artifact) if artifact.is_file() and artifact.suffix.lower() == ".onnx" else None
     manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
+        "kind": "yolo_team_deployment_export",
+        "export_id": output_dir.name,
         "target": args.target,
         "target_label": profile["label"],
         "family": profile["family"],
@@ -161,7 +172,7 @@ def export_model(args: argparse.Namespace) -> tuple[Path, Path]:
         "documentation": profile["docs_url"],
         "runtime_check": runtime_check,
     }
-    manifest_path = output_dir / f"{source.stem}.{args.target}.manifest.json"
+    manifest_path = output_dir / f"{export_stem}.manifest.json"
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     print(f"部署平台：{profile['label']}")
@@ -175,7 +186,7 @@ def export_model(args: argparse.Namespace) -> tuple[Path, Path]:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="MyAutoTrain multi-platform model exporter")
+    parser = argparse.ArgumentParser(description="YOLO团队训练平台 multi-platform model exporter")
     parser.add_argument("--model", required=True, help="trained .pt model or an existing .onnx")
     parser.add_argument("--target", choices=DEVICE_PROFILES, default="generic_onnx")
     parser.add_argument("--format", choices=EXPORT_FORMATS, default="auto")
@@ -183,7 +194,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--chip", default="", help="target chip, for example rk3588 or x5")
     parser.add_argument("--data", default="", help="data.yaml, required for INT8 calibration")
     parser.add_argument("--classes", default="", help="optional classes.txt for ONNX hand-off")
-    parser.add_argument("--output-dir", default="", help="defaults to MODEL_DIR/deploy")
+    parser.add_argument("--output-dir", default="", help="deployment export root")
     parser.add_argument("--int8", action="store_true")
     return parser
 

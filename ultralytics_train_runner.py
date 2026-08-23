@@ -28,7 +28,7 @@ def run() -> None:
 
     def report_first_batch_shape(self, batch):
         batch = original_preprocess_batch(self, batch)
-        if not getattr(self, "_myautotrain_shape_reported", False):
+        if not getattr(self, "_yolo_team_platform_shape_reported", False):
             tensor = batch.get("img")
             if tensor is not None and tensor.ndim == 4:
                 print(
@@ -36,7 +36,7 @@ def run() -> None:
                     f"BATCH={tensor.shape[0]}",
                     flush=True,
                 )
-            self._myautotrain_shape_reported = True
+            self._yolo_team_platform_shape_reported = True
         return batch
 
     DetectionTrainer.preprocess_batch = report_first_batch_shape

@@ -21,6 +21,16 @@ from pathlib import Path
 from PIL import Image
 import yaml
 
+from platform_paths import (
+    DEPLOYMENT_EXPORTS_DIR,
+    TEMP_DIR,
+    TRAINING_RUNS_DIR,
+    artifact_stem,
+    local_timestamp,
+    safe_identifier,
+    unique_directory,
+)
+
 
 
 def configure_stdio():
@@ -767,7 +777,7 @@ def write_training_manifest(
     args, out: Path, timestamp: str, dataset_root: Path, dataset_source: Path,
     run_dir: Path, training_images: list[Path] | None = None,
 ) -> Path:
-    classes_path = out / "classes.txt"
+    classes_path = out / "dataset-classes.txt"
     classes = [line.strip() for line in classes_path.read_text(encoding="utf-8-sig").splitlines() if line.strip()]
     source_key = f"{dataset_root}|{dataset_source}".encode("utf-8", errors="replace")
     dataset_id = hashlib.sha256(source_key).hexdigest()[:12]
@@ -781,11 +791,11 @@ def write_training_manifest(
                 version_hash.update(f"{image_path.name}|{stat.st_size}|{stat.st_mtime_ns}\n".encode("utf-8", errors="replace"))
             except OSError:
                 continue
-    results_csv = out / "results.csv"
+    results_csv = out / "training-metrics.csv"
     manifest = {
         "schema_version": 1,
         "kind": "training_run",
-        "run_id": timestamp,
+        "run_id": out.name,
         "created_at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
         "status": "stopped_exported" if args.stop_export_signal and Path(args.stop_export_signal).exists() else "completed",
         "output_dir": str(out.resolve()),
@@ -814,15 +824,15 @@ def write_training_manifest(
         },
         "metrics": read_training_metrics(results_csv),
         "artifacts": {
-            "pt": f"{args.model_name or args.project_name}.pt",
-            "onnx": f"{args.model_name or args.project_name}.onnx",
-            "classes": "classes.txt",
-            "results_csv": "results.csv" if results_csv.is_file() else "",
-            "args_yaml": "args.yaml" if (out / "args.yaml").is_file() else "",
-            "plots": "train_plots",
+            "pt": "model-best.pt",
+            "onnx": "model-best.onnx",
+            "classes": "dataset-classes.txt",
+            "results_csv": "training-metrics.csv" if results_csv.is_file() else "",
+            "args_yaml": "training-arguments.yaml" if (out / "training-arguments.yaml").is_file() else "",
+            "plots": "plots",
         },
     }
-    manifest_path = out / "training_manifest.json"
+    manifest_path = out / "training-manifest.json"
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return manifest_path
 
@@ -830,10 +840,13 @@ def write_training_manifest(
 
 def run_train_stage(args, script_root: Path):
     dataset_root = Path(args.dataset_root).resolve()
-    timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-    work = dataset_root / f".myautotrain_work_{timestamp}"
+    timestamp = local_timestamp()
+    project_slug = safe_identifier(args.project_name, "project")
+    model_slug = safe_identifier(args.model_name or args.project_name, "model")
+    run_root = Path(args.output_root).expanduser().resolve() / project_slug
+    out = unique_directory(run_root, artifact_stem([project_slug, model_slug, "train"], timestamp))
+    work = unique_directory(TEMP_DIR, f"{out.name}__work")
     yolo_data = work / "yolo_dataset"
-    out = dataset_root / f"outputs_{timestamp}"
     work.mkdir(parents=True, exist_ok=True)
     yolo_data.mkdir(parents=True, exist_ok=True)
     out.mkdir(parents=True, exist_ok=True)
@@ -879,25 +892,25 @@ def run_train_stage(args, script_root: Path):
         best_pt, best_onnx = train_local(args, dataset_path, work)
 
     model_name = args.model_name or args.project_name
-    out_pt = out / f"{model_name}.pt"
-    out_onnx = out / f"{model_name}.onnx"
+    out_pt = out / "model-best.pt"
+    out_onnx = out / "model-best.onnx"
     shutil.copy2(best_pt, out_pt)
     shutil.copy2(best_onnx, out_onnx)
-    shutil.copy2(yolo_data / "classes.txt", out / "classes.txt")
+    shutil.copy2(yolo_data / "classes.txt", out / "dataset-classes.txt")
 
     run_dir = best_pt.parent.parent if args.train_mode != "remote-windows" else best_pt.parent / "train_plots"
-    plot_dir = out / "train_plots"
+    plot_dir = out / "plots"
     plot_dir.mkdir(parents=True, exist_ok=True)
-    for artifact_name in ("results.csv", "args.yaml"):
+    for artifact_name, output_name in (("results.csv", "training-metrics.csv"), ("args.yaml", "training-arguments.yaml")):
         artifact = run_dir / artifact_name
         if artifact.is_file():
-            shutil.copy2(artifact, out / artifact_name)
+            shutil.copy2(artifact, out / output_name)
     for pattern in ("*.png", "*.jpg", "*.jpeg"):
         for artifact in run_dir.glob(pattern):
             if artifact.is_file():
                 shutil.copy2(artifact, plot_dir / artifact.name)
 
-    calib_dir = out / "calib_images"
+    calib_dir = out / "calibration-images"
     calib_dir.mkdir(parents=True, exist_ok=True)
     training_images = list(train_images)
     calibration_images = training_images[:200]
@@ -906,7 +919,7 @@ def run_train_stage(args, script_root: Path):
     for img in calibration_images:
         target_name = f"{img.parent.name}_{img.name}" if args.train_task == "classify" else img.name
         shutil.copy2(img, calib_dir / target_name)
-    test_image = out / "test.jpg"
+    test_image = out / "test-sample.jpg"
     shutil.copy2(calibration_images[0], test_image)
 
     vm_script = script_root / "vm_convert_pack.sh"
@@ -923,7 +936,7 @@ def run_train_stage(args, script_root: Path):
     print(f"TRAIN_PLOT_DIR={plot_dir}", flush=True)
     print(f"TRAIN_MODEL_PT={out_pt}", flush=True)
     print(f"TRAIN_MODEL_ONNX={out_onnx}", flush=True)
-    print(f"TRAIN_CLASSES={out / 'classes.txt'}", flush=True)
+    print(f"TRAIN_CLASSES={out / 'dataset-classes.txt'}", flush=True)
     print(f"TRAIN_CALIB_DIR={calib_dir}", flush=True)
     print(f"TRAIN_TEST_IMAGE={test_image}", flush=True)
     print(f"TRAIN_MANIFEST={training_manifest}", flush=True)
@@ -932,7 +945,7 @@ def run_train_stage(args, script_root: Path):
         "out": out,
         "model_pt": out_pt,
         "model_onnx": out_onnx,
-        "classes": out / "classes.txt",
+        "classes": out / "dataset-classes.txt",
         "calib_dir": calib_dir,
         "test_image": test_image,
         "model_name": model_name,
@@ -953,14 +966,14 @@ def resolve_convert_inputs(args):
         raise SystemExit("--model-path is required for convert stage and must exist")
 
     base_dir = model_path.parent
-    classes_path = Path(args.classes_path).resolve() if args.classes_path else base_dir / "classes.txt"
-    calib_dir = Path(args.calib_dir).resolve() if args.calib_dir else base_dir / "calib_images"
-    test_image = Path(args.test_image).resolve() if args.test_image else base_dir / "test.jpg"
+    classes_path = Path(args.classes_path).resolve() if args.classes_path else base_dir / "dataset-classes.txt"
+    calib_dir = Path(args.calib_dir).resolve() if args.calib_dir else base_dir / "calibration-images"
+    test_image = Path(args.test_image).resolve() if args.test_image else base_dir / "test-sample.jpg"
 
     if not classes_path.exists():
-        raise SystemExit(f"classes.txt not found: {classes_path}")
+        raise SystemExit(f"dataset-classes.txt not found: {classes_path}")
     if not calib_dir.is_dir():
-        raise SystemExit(f"calib_images folder not found: {calib_dir}")
+        raise SystemExit(f"calibration-images folder not found: {calib_dir}")
     if not test_image.exists():
         fallback = first_image(calib_dir)
         if not fallback:
@@ -972,8 +985,7 @@ def resolve_convert_inputs(args):
 def run_convert_stage(args, script_root: Path, train_result=None):
     if args.train_task == "classify":
         raise SystemExit("MaixCAM 转换流程目前仅支持目标检测 ONNX；分类模型可直接使用导出的 .pt 或 .onnx。")
-    timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-    dataset_root = Path(args.dataset_root).resolve()
+    timestamp = local_timestamp()
 
     if train_result:
         model_path = train_result["model_onnx"]
@@ -985,12 +997,14 @@ def run_convert_stage(args, script_root: Path, train_result=None):
         model_path, classes_path, calib_dir, test_image = resolve_convert_inputs(args)
         model_name = args.model_name or model_path.stem
 
-    out = dataset_root / f"convert_outputs_{timestamp}"
+    model_slug = safe_identifier(model_name, "model")
+    conversion_root = DEPLOYMENT_EXPORTS_DIR / "maixcam"
+    out = unique_directory(conversion_root, artifact_stem([model_slug, "maixcam", "conversion"], timestamp))
     out.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(model_path, out / f"{model_name}.onnx")
-    shutil.copy2(classes_path, out / "classes.txt")
-    shutil.copy2(test_image, out / "test.jpg")
-    local_calib = out / "calib_images"
+    shutil.copy2(model_path, out / "model-input.onnx")
+    shutil.copy2(classes_path, out / "dataset-classes.txt")
+    shutil.copy2(test_image, out / "test-sample.jpg")
+    local_calib = out / "calibration-images"
     if local_calib.exists():
         shutil.rmtree(local_calib)
     shutil.copytree(calib_dir, local_calib)
@@ -1000,7 +1014,7 @@ def run_convert_stage(args, script_root: Path, train_result=None):
         raise SystemExit(f"vm_convert_pack.sh not found: {vm_script}")
     shutil.copy2(vm_script, out / "vm_convert_pack.sh")
 
-    zip_path = dataset_root / f"maixcam_convert_job_{timestamp}.zip"
+    zip_path = out.parent / f"{out.name}__conversion-job.zip"
     zip_dir_contents(out, zip_path)
     remote = f"{args.vm_user}@{args.vm_host}"
     print(f"CONVERT_INPUT_MODEL={model_path}", flush=True)
@@ -1011,12 +1025,13 @@ def run_convert_stage(args, script_root: Path, train_result=None):
     run(["scp", str(zip_path), f"{remote}:{args.vm_work_dir}/"])
 
     zip_name = zip_path.name
-    remote_job = f"job_{timestamp}"
-    remote_outputs = f"outputs_{timestamp}"
+    remote_job = f"{model_slug}__maixcam__job__{timestamp}"
+    remote_outputs = f"{model_slug}__maixcam__conversion__{timestamp}"
     env_prefix = (
         f"IMG_WIDTH={shlex.quote(str(args.img_width))} "
         f"IMG_HEIGHT={shlex.quote(str(args.img_height))} "
         f"MODEL_NAME={shlex.quote(model_name)} "
+        f"OUTPUT_STEM={shlex.quote(remote_outputs)} "
         f"OPERATOR_MODE={shlex.quote(args.operator_mode)} "
     )
     remote_cmd = (
@@ -1033,17 +1048,18 @@ def run_convert_stage(args, script_root: Path, train_result=None):
     print("Running VM conversion...")
     run(["ssh", remote, remote_cmd])
     print("Downloading final outputs from VM...")
-    final_tar = dataset_root / f"{remote_outputs}.tar.gz"
-    run(["scp", f"{remote}:{args.vm_work_dir}/{remote_outputs}.tar.gz", str(dataset_root)])
+    final_tar = out.parent / f"{out.name}__result.tar.gz"
+    run(["scp", f"{remote}:{args.vm_work_dir}/{remote_outputs}.tar.gz", str(final_tar)])
     print(f"CONVERT_FINAL_TAR={final_tar}", flush=True)
     print(f"Final package downloaded: {final_tar}")
     return final_tar
 
 
 def build_parser(script_root: Path):
-    ap = argparse.ArgumentParser(description="MyAutoTrain YOLO training workflow with optional MaixCAM conversion")
+    ap = argparse.ArgumentParser(description="YOLO团队训练平台 training workflow with optional MaixCAM conversion")
     ap.add_argument("--stage", choices=["train", "convert", "all"], default="all")
     ap.add_argument("--dataset-root", default=str(script_root))
+    ap.add_argument("--output-root", default=str(TRAINING_RUNS_DIR), help="训练运行根目录")
     ap.add_argument("--images-dir", default="")
     ap.add_argument("--train-task", choices=["detect", "classify"], default="detect", help="训练任务：检测或图像分类")
     ap.add_argument("--annotations-dir", default="")
@@ -1066,7 +1082,7 @@ def build_parser(script_root: Path):
     ap.add_argument("--train-device", choices=["cuda", "cpu"], default="cuda")
     ap.add_argument("--train-cache", choices=["False", "True", "disk"], default="False")
     ap.add_argument("--stop-export-signal", default="")
-    ap.add_argument("--project-name", default="my_yolo_project")
+    ap.add_argument("--project-name", default="default-project")
 
     ap.add_argument("--model-name", default="my_yolo_model")
     ap.add_argument("--operator-mode", choices=["recommended", "maixcam"], default="recommended")
@@ -1075,7 +1091,7 @@ def build_parser(script_root: Path):
     ap.add_argument("--remote-train-user", default="")
     ap.add_argument("--remote-train-host", default="127.0.0.1")
     ap.add_argument("--remote-train-port", type=int, default=22)
-    ap.add_argument("--remote-train-work-dir", default="C:/myautotrain_train_jobs")
+    ap.add_argument("--remote-train-work-dir", default="C:/YOLOTeamTrainingPlatform/workspace/training-jobs")
 
     ap.add_argument("--model-path", default="")
     ap.add_argument("--classes-path", default="")
@@ -1084,7 +1100,7 @@ def build_parser(script_root: Path):
 
     ap.add_argument("--vm-user", default="")
     ap.add_argument("--vm-host", default="")
-    ap.add_argument("--vm-work-dir", default="~/myautotrain/maixcam_jobs")
+    ap.add_argument("--vm-work-dir", default="~/yolo-team-training-platform/maixcam-jobs")
     ap.add_argument("--skip-vm-convert", action="store_true")
     return ap
 

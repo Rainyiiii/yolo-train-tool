@@ -1,6 +1,6 @@
 # 参与贡献
 
-感谢帮助 MyAutoTrain 适配更多训练与部署平台。提交代码前请先阅读 [设备适配文档](docs/DEVICE_ADAPTERS.md) 和 [路线图](docs/ROADMAP.md)。
+感谢帮助 YOLO团队训练平台适配更多训练与部署平台。提交代码前请先阅读 [设备适配文档](docs/DEVICE_ADAPTERS.md) 和 [路线图](docs/ROADMAP.md)。
 
 ## 开发检查
 

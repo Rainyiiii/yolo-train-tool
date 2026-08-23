@@ -3,14 +3,13 @@
 
 from __future__ import annotations
 
-import datetime as dt
 import json
 from pathlib import Path
 from typing import Any, Iterable
 
 
 REGISTRY_SCHEMA_VERSION = 1
-TRAINING_MANIFEST_NAME = "training_manifest.json"
+TRAINING_MANIFEST_NAME = "training-manifest.json"
 
 
 def _resolved_text(path: str | Path) -> str:
@@ -62,18 +61,11 @@ def register_asset_manifest(registry_path: Path, manifest: str | Path) -> str:
         registry["manifests"].append(resolved)
     path = Path(resolved)
     if path.name == TRAINING_MANIFEST_NAME:
-        root = str(path.parent.parent)
+        root = str(path.parent)
         if root not in registry["roots"]:
             registry["roots"].append(root)
     save_registry(registry_path, registry)
     return resolved
-
-
-def _classes_from_file(path: Path) -> list[str]:
-    try:
-        return [line.strip() for line in path.read_text(encoding="utf-8-sig").splitlines() if line.strip()]
-    except OSError:
-        return []
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -101,18 +93,6 @@ def _artifact(kind: str, raw_path: str | Path | None, base_dir: Path | None = No
     }
 
 
-def _timestamp_from_output(path: Path) -> str:
-    value = path.name.removeprefix("outputs_")
-    try:
-        parsed = dt.datetime.strptime(value, "%Y%m%d_%H%M%S")
-        return parsed.isoformat(timespec="seconds")
-    except ValueError:
-        try:
-            return dt.datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds")
-        except OSError:
-            return ""
-
-
 def _run_from_manifest(manifest_path: Path, data: dict[str, Any]) -> dict[str, Any] | None:
     if data.get("kind") != "training_run":
         return None
@@ -134,7 +114,7 @@ def _run_from_manifest(manifest_path: Path, data: dict[str, Any]) -> dict[str, A
     dataset_root = _resolved_text(configured_dataset_root if configured_dataset_root.exists() else Path(output_dir).parent)
     return {
         "run_id": str(data.get("run_id") or manifest_path.parent.name),
-        "created_at": str(data.get("created_at") or _timestamp_from_output(manifest_path.parent)),
+        "created_at": str(data.get("created_at") or ""),
         "status": str(data.get("status") or "completed"),
         "association": "manifest",
         "manifest": str(manifest_path.resolve()),
@@ -157,46 +137,12 @@ def _run_from_manifest(manifest_path: Path, data: dict[str, Any]) -> dict[str, A
     }
 
 
-def _infer_run(output_dir: Path) -> dict[str, Any] | None:
-    pt_files = sorted(output_dir.glob("*.pt"))
-    onnx_files = sorted(output_dir.glob("*.onnx"))
-    if not pt_files and not onnx_files:
-        return None
-    classes = _classes_from_file(output_dir / "classes.txt")
-    artifacts = [
-        item for item in (
-            _artifact("pt", pt_files[0] if pt_files else None),
-            _artifact("onnx", onnx_files[0] if onnx_files else None),
-            _artifact("classes", output_dir / "classes.txt" if (output_dir / "classes.txt").is_file() else None),
-            _artifact("results", output_dir / "results.csv" if (output_dir / "results.csv").is_file() else None),
-        ) if item is not None
-    ]
-    model_file = pt_files[0] if pt_files else onnx_files[0]
-    dataset_root = output_dir.parent.resolve()
-    return {
-        "run_id": output_dir.name,
-        "created_at": _timestamp_from_output(output_dir),
-        "status": "completed",
-        "association": "inferred",
-        "manifest": "",
-        "output_dir": str(output_dir.resolve()),
-        "model_name": model_file.stem,
-        "task": "unknown",
-        "classes": classes,
-        "dataset": {"id": dataset_root.name, "name": dataset_root.name, "root": str(dataset_root), "source": "", "image_count": 0, "version": ""},
-        "training": {},
-        "metrics": {},
-        "artifacts": artifacts,
-        "deployments": [],
-    }
-
-
 def _candidate_output_dirs(root: Path) -> list[Path]:
     if not root.is_dir():
         return []
-    if root.name.startswith("outputs_"):
+    if (root / TRAINING_MANIFEST_NAME).is_file():
         return [root]
-    return sorted((path for path in root.glob("outputs_*") if path.is_dir()), reverse=True)[:500]
+    return sorted((path.parent for path in root.rglob(TRAINING_MANIFEST_NAME) if path.is_file()), reverse=True)[:1000]
 
 
 def _deployment_record(manifest_path: Path, data: dict[str, Any]) -> dict[str, Any] | None:
@@ -261,17 +207,10 @@ def collect_model_assets(
         root = Path(raw_root).expanduser().resolve()
         if not root.is_dir():
             continue
-        for path in root.glob("*.manifest.json"):
+        for path in root.rglob("*.manifest.json"):
             deployment = _deployment_record(path, _load_json(path))
             if deployment is not None and all(item["manifest"] != deployment["manifest"] for item in deployments):
                 deployments.append(deployment)
-
-    for output_dir in output_dirs:
-        key = str(output_dir.resolve()).casefold()
-        if key not in training_by_dir:
-            inferred = _infer_run(output_dir)
-            if inferred is not None:
-                training_by_dir[key] = inferred
 
     runs = list(training_by_dir.values())
     for run in runs:

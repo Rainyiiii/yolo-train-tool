@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Local-first LAN collaboration server for MyAutoTrain dataset annotation."""
+"""Local-first LAN collaboration server for YOLO Team dataset annotation."""
 
 from __future__ import annotations
 
@@ -23,11 +23,12 @@ import psutil
 from annotation_exports import export_dataset, import_project_package
 from annotation_store import AnnotationError, AnnotationStore
 from annotation_ui import ANNOTATION_HTML
+from platform_paths import ANNOTATION_HUB_DIR, PRODUCT_NAME
 
 
 SCRIPT_ROOT = Path(__file__).resolve().parent
-DEFAULT_WORKSPACE = SCRIPT_ROOT / "annotation_workspace"
-SESSION_COOKIE = "myautotrain_annotation_session"
+DEFAULT_WORKSPACE = ANNOTATION_HUB_DIR
+SESSION_COOKIE = "yolo_team_annotation_session"
 MAX_JSON_BODY = 4 * 1024 * 1024
 LOGIN_WINDOW_SECONDS = 5 * 60
 LOGIN_ATTEMPTS = 10
@@ -195,7 +196,7 @@ class AnnotationHandler(BaseHTTPRequestHandler):
                 self.send_html()
                 return
             if parsed.path == "/api/health":
-                self.send_json({"ok": True, "service": "MyAutoTrain Annotation Server"})
+                self.send_json({"ok": True, "service": f"{PRODUCT_NAME} Annotation Server"})
                 return
             if parsed.path == "/api/bootstrap":
                 self.send_json({
@@ -334,7 +335,7 @@ class AnnotationHandler(BaseHTTPRequestHandler):
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="MyAutoTrain local-first collaborative annotation server")
+    parser = argparse.ArgumentParser(description=f"{PRODUCT_NAME} local-first collaborative annotation server")
     parser.add_argument("--host", default="127.0.0.1", help="127.0.0.1 for personal mode; 0.0.0.0 for LAN sharing")
     parser.add_argument("--port", type=int, default=9000)
     parser.add_argument("--workspace", default=str(DEFAULT_WORKSPACE))
@@ -355,7 +356,7 @@ def main() -> int:
         print(f"无法监听 {host}:{args.port}：{exc}", file=sys.stderr)
         return 1
     local_url = f"http://127.0.0.1:{args.port}/"
-    print(f"MyAutoTrain Annotation Server: {local_url}")
+    print(f"{PRODUCT_NAME}协作标注中心：{local_url}")
     print(f"Workspace: {store.workspace}")
     print("Mode: " + ("LAN shared" if shared else "personal"))
     if shared:

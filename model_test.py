@@ -7,6 +7,8 @@ from typing import Optional
 import cv2
 from ultralytics import YOLO
 
+from platform_paths import TEST_RESULTS_DIR, artifact_stem, local_timestamp, safe_identifier, unique_directory
+
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
@@ -34,9 +36,10 @@ def predict_image(model: YOLO, image_path: Path, conf: float):
     return draw_results(results), prediction_summary(results[0])
 
 
-def run_image(model: YOLO, image_path: Path, conf: float):
+def run_image(model: YOLO, image_path: Path, conf: float, output_dir: Path):
     annotated, (label, confidence) = predict_image(model, image_path, conf)
-    out_path = image_path.with_name(image_path.stem + "_predict" + image_path.suffix)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    out_path = output_dir / f"prediction{image_path.suffix.lower()}"
     cv2.imwrite(str(out_path), annotated)
     if label:
         print(f"TEST_CLASSIFICATION={label} confidence={confidence:.4f}", flush=True)
@@ -50,7 +53,8 @@ def run_folder(model: YOLO, folder_path: Path, conf: float, output_dir: Optional
     image_paths = sorted(path for path in folder_path.rglob("*") if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS)
     if not image_paths:
         raise SystemExit(f"图片文件夹中未找到支持的图片：{folder_path}")
-    output_dir = output_dir or folder_path / "predict_results"
+    if output_dir is None:
+        raise ValueError("批量测试必须提供规范化输出目录。")
     output_dir.mkdir(parents=True, exist_ok=True)
     rows = []
     failures = []
@@ -68,7 +72,7 @@ def run_folder(model: YOLO, folder_path: Path, conf: float, output_dir: Optional
             failures.append((str(image_path), str(exc)))
             print(f"TEST_FOLDER_ERROR={image_path} error={exc}", flush=True)
 
-    summary_path = output_dir / "predictions.csv"
+    summary_path = output_dir / "prediction-results.csv"
     with summary_path.open("w", encoding="utf-8-sig", newline="") as file:
         writer = csv.writer(file)
         writer.writerow(("image", "classification", "confidence", "output"))
@@ -146,6 +150,11 @@ def main():
     if not model_path.is_file():
         raise SystemExit(f"模型不存在：{model_path}")
     model = YOLO(str(model_path))
+    output_root = Path(args.output_dir).resolve() if args.output_dir else TEST_RESULTS_DIR
+    test_dir = unique_directory(
+        output_root / safe_identifier(model_path.stem, "model"),
+        artifact_stem([model_path.stem, args.source, "test"], local_timestamp()),
+    )
 
     if args.source == "camera":
         run_camera(model, args.camera_index, args.conf)
@@ -155,15 +164,14 @@ def main():
         image_path = Path(args.image).resolve()
         if not image_path.is_file():
             raise SystemExit(f"图片不存在：{image_path}")
-        run_image(model, image_path, args.conf)
+        run_image(model, image_path, args.conf, test_dir)
     else:
         if not args.folder:
             raise SystemExit("--folder is required when --source folder")
         folder_path = Path(args.folder).resolve()
         if not folder_path.is_dir():
             raise SystemExit(f"图片文件夹不存在：{folder_path}")
-        output_dir = Path(args.output_dir).resolve() if args.output_dir else None
-        run_folder(model, folder_path, args.conf, output_dir)
+        run_folder(model, folder_path, args.conf, test_dir)
 
 
 if __name__ == "__main__":

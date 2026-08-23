@@ -1,0 +1,36 @@
+# Windows WebView2 安装与发布
+
+## 队友安装
+
+队友只需要运行：
+
+```text
+YOLO-Team-Training-Platform-Setup-v3.0.0-beta.exe
+```
+
+安装器默认选择 `D:\YOLOTeamTrainingPlatform`，并自动完成：
+
+1. 安装 .NET 8 Desktop Runtime；
+2. 安装 Microsoft Edge WebView2 Evergreen Runtime；
+3. 安装或定位 Python 3.10–3.14；
+4. 创建隔离运行环境；
+5. 根据 NVIDIA GPU 选择 CUDA 12.8 或 CPU PyTorch；
+6. 安装 `onnxruntime` 等平台依赖；
+7. 创建规范化 Workspace；
+8. 创建桌面和开始菜单快捷方式。
+
+首次安装需要联网下载 Python/PyTorch/PyPI 依赖，耗时取决于网络和显卡版本。详细日志位于 `D:\YOLOTeamTrainingPlatform\Workspace\logs\installation.log`。
+
+WebView2 桌面程序只加载本机 `127.0.0.1:8989` 平台页面；外部文档链接交给系统浏览器。下载文件保存到 `Workspace/exports/downloads`。关闭桌面窗口时会停止本机面板和协作标注服务，不删除工作区。
+
+## 维护者构建
+
+构建机需要 .NET 8 SDK 与 Inno Setup 6，然后执行：
+
+```powershell
+.\installer\windows\build-installer.ps1
+```
+
+生成文件位于 `dist/`。脚本会从微软官方下载并缓存 .NET Desktop Runtime 与 WebView2 Evergreen Bootstrapper。
+
+公开发布前必须为 Setup 和桌面 EXE 配置可信代码签名证书。未签名安装器可能触发 Windows SmartScreen；当前仓库不会伪造或绕过该提示。

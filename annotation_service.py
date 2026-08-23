@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Background service manager for the MyAutoTrain annotation server."""
+"""Background service manager for the YOLO Team annotation server."""
 
 from __future__ import annotations
 
@@ -17,13 +17,14 @@ from pathlib import Path
 import psutil
 
 from annotation_server import DEFAULT_WORKSPACE, discover_lan_addresses
+from platform_paths import LOG_DIR, PRODUCT_NAME, STATE_DIR, ensure_workspace
 
 
 ROOT = Path(__file__).resolve().parent
+ensure_workspace()
 SERVER_SCRIPT = ROOT / "annotation_server.py"
-PID_FILE = ROOT / ".annotation_server.pid.json"
-LOG_DIR = ROOT / "logs"
-LOG_FILE = LOG_DIR / "annotation_server.log"
+PID_FILE = STATE_DIR / "annotation-service.json"
+LOG_FILE = LOG_DIR / "annotation-server.log"
 PORT = 9000
 LOCAL_URL = f"http://127.0.0.1:{PORT}/"
 
@@ -196,7 +197,7 @@ def status_payload() -> dict:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Manage MyAutoTrain annotation server")
+    parser = argparse.ArgumentParser(description=f"Manage {PRODUCT_NAME} annotation server")
     subparsers = parser.add_subparsers(dest="action", required=True)
     start_parser = subparsers.add_parser("start")
     start_parser.add_argument("--share", action="store_true")

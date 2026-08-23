@@ -1,61 +1,38 @@
-# 数据集与模型资产页面
+# 数据集与模型资产
 
-“模型资产”是独立页面，用于回答三个问题：
+“模型资产”页面用于建立可审计的数据集—训练运行—模型—部署产物关系。平台只索引带 `training-manifest.json` 的规范化训练运行，不根据旧目录猜测关系。
 
-1. 这个模型由哪个数据集训练得到？
-2. 当时使用了什么任务、尺寸、基础模型和训练参数？
-3. 该模型已经导出过哪些设备格式？
-
-## 新训练记录
-
-每次训练完成后，输出目录会新增：
+## 标准训练运行
 
 ```text
-dataset/
-└─ outputs_20260823_120000/
-   ├─ my_yolo_model.pt
-   ├─ my_yolo_model.onnx
-   ├─ classes.txt
-   ├─ results.csv
-   ├─ args.yaml
-   ├─ train_plots/
-   └─ training_manifest.json
+Workspace/training-runs/<project-id>/
+└─ <project>__<model>__train__YYYYMMDD-HHMMSS/
+   ├─ model-best.pt
+   ├─ model-best.onnx
+   ├─ dataset-classes.txt
+   ├─ training-metrics.csv
+   ├─ training-arguments.yaml
+   ├─ training-manifest.json
+   ├─ plots/
+   ├─ calibration-images/
+   └─ test-sample.jpg
 ```
 
-`training_manifest.json` 记录：
+清单记录数据集 ID、来源、版本指纹、类别、图片数量、训练参数、指标和资产相对路径。页面只把清单中明确声明的关系标记为可信关联。
 
-- 数据集 ID、名称、来源路径、任务、类别、训练图片数量和版本指纹；
-- 训练时间、输入尺寸、基础模型、Epoch、Batch、设备；
-- 最后一轮可用训练指标；
-- PT、ONNX、类别、结果表和训练图路径。
+## 部署导出
 
-页面将这类记录标记为“清单关联”，表示数据集—训练—模型关系来自训练时写入的元数据。
+```text
+Workspace/exports/deployments/<target>/
+└─ <model>__<target>__<format>__YYYYMMDD-HHMMSS/
+   ├─ <model>__<target>__<format>__YYYYMMDD-HHMMSS.<ext>
+   └─ <model>__<target>__<format>__YYYYMMDD-HHMMSS.manifest.json
+```
 
-版本指纹由类别、图片数量和抽样文件信息生成，用来帮助判断两次训练是否使用了同一版数据；它不是文件内容的完整校验和。
-
-## 旧版输出
-
-旧版本没有训练清单。选择原数据集目录并点击“扫描并记住”后，系统会检查其直接子目录中的 `outputs_*` 文件夹，读取 PT、ONNX 和 `classes.txt`。
-
-这种关系根据目录结构推断，因此页面标记为“推断关联”。旧输出无法可靠恢复基础模型、输入尺寸和训练指标时，会明确显示未知，不会编造内容。
-
-## 快捷操作
-
-- “用于测试”：把 PT 模型填入“测试模型”页面。
-- “用于部署”：把 PT/ONNX 和 `classes.txt` 填入“部署与导出”页面。
-- “复制路径”：复制模型的本地绝对路径。
-- 搜索框支持数据集、模型、类别、任务和路径。
-
-部署工具生成的 `*.manifest.json` 会按 `source_model` 回连训练模型，页面会显示已经生成的目标平台、格式和芯片。
+部署清单通过 `source_model` 回连训练模型，记录目标平台、格式、芯片、输入尺寸、量化和下一步厂商工具链要求。
 
 ## 本地索引
 
-已扫描目录和清单路径保存在：
+索引保存在 `Workspace/config/model-registry.json`。它只记录清单和补充扫描根目录，不包含模型本体。移动外部运行目录后，需要在“模型资产”页面重新登记。
 
-```text
-model_registry.json
-```
-
-它只属于当前电脑，已被 `.gitignore` 排除。移动数据集后，在新位置重新执行一次扫描即可。页面不会递归扫描整块磁盘，只检查登记目录及其直接的 `outputs_*` 子目录。
-
-训练清单可能包含本机数据集路径。分享完整训练输出前，请检查是否需要隐藏用户名或私人目录。
+旧版训练目录不再扫描或迁移；平台只索引包含 `training-manifest.json` 的新训练运行。

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""SQLite-backed collaboration state for the MyAutoTrain annotation server."""
+"""SQLite-backed collaboration state for the YOLO Team annotation server."""
 
 from __future__ import annotations
 

@@ -1,6 +1,6 @@
-# MyAutoTrain 兼容性说明
+# YOLO团队训练平台兼容性说明
 
-本文档说明 MyAutoTrain 的运行环境、硬件要求、依赖选择和已知限制。
+本文档说明 YOLO团队训练平台的运行环境、硬件要求、依赖选择和已知限制。
 
 ## 支持范围
 
@@ -64,7 +64,7 @@ NVIDIA 环境首次安装可能需要数 GB 磁盘空间。建议预留至少 8�
 
 - 面板默认只监听 `127.0.0.1:8989`，只允许本机访问。
 - 协作标注个人模式监听 `127.0.0.1:9000`；共享模式监听 `0.0.0.0:9000`，仅应在可信局域网中使用。
-- 局域网伙伴只需要现代浏览器，不需要安装 Docker、Python 或 MyAutoTrain；作为主机的电脑需要完成项目安装。
+- 局域网伙伴只需要现代浏览器，不需要安装 Docker、Python 或本平台；作为主机的电脑需要完成项目安装。
 - 如需远程使用，建议通过 SSH 端口转发或反向代理，不建议直接暴露到公网。
 - Ubuntu 脚本会优先寻找本机已有的 Python 3.10–3.14；如果没有，会尝试通过 `apt` 安装 `python3`、`python3-venv` 和 `python3-pip`。如果发行版默认 Python 低于 3.10，需要手动安装受支持版本。
 - Python、PyTorch、Ultralytics 和 ONNX 依赖会持续更新；发布新版本前建议在干净的 Windows 和 Ubuntu 环境各测试一次。
@@ -108,9 +108,9 @@ Windows 使用：
 
 ### 查看诊断报告
 
-安装器会生成 `logs/system_check.json`。面板启动失败时，重点查看：
+安装器会生成 `Workspace/logs/system-check.json`。面板启动失败时，重点查看：
 
-- `logs/install.log` 或 `logs/install_ubuntu.log`
-- `logs/launcher.log`
-- `logs/panel.log`
-- `logs/system_check.json`
+- `Workspace/logs/installation.log` 或 `workspace/logs/installation-ubuntu.log`
+- `Workspace/logs/launcher.log`
+- `Workspace/logs/panel.log`
+- `Workspace/logs/system-check.json`

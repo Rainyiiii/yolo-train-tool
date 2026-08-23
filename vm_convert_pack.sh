@@ -5,10 +5,11 @@ JOB_DIR="${1:-}"
 TS="${2:-$(date +%Y%m%d_%H%M%S)}"
 IMG_WIDTH="${IMG_WIDTH:-${IMG_SIZE:-448}}"
 IMG_HEIGHT="${IMG_HEIGHT:-${IMG_SIZE:-448}}"
-MODEL_NAME="${MODEL_NAME:-my_yolo_model}"
+MODEL_NAME="${MODEL_NAME:-yolo-model}"
 OPERATOR_MODE="${OPERATOR_MODE:-recommended}"
-CONTAINER_NAME="${CONTAINER_NAME:-myautotrain-tpu-env}"
+CONTAINER_NAME="${CONTAINER_NAME:-yolo-team-platform-tpu-env}"
 IMAGE_NAME="${IMAGE_NAME:-sophgo/tpuc_dev:latest}"
+OUTPUT_STEM="${OUTPUT_STEM:-${MODEL_NAME}__maixcam__conversion__${TS}}"
 
 if [ -z "$JOB_DIR" ]; then
   echo "usage: bash vm_convert_pack.sh <job_dir> [timestamp]"
@@ -16,7 +17,7 @@ if [ -z "$JOB_DIR" ]; then
 fi
 
 JOB_DIR="$(readlink -f "$JOB_DIR")"
-OUT_DIR="$(pwd)/outputs_${TS}"
+OUT_DIR="$(pwd)/${OUTPUT_STEM}"
 mkdir -p "$OUT_DIR"
 cp "$JOB_DIR/${MODEL_NAME}.onnx" "$OUT_DIR/"
 cp "$JOB_DIR/classes.txt" "$OUT_DIR/"
@@ -31,7 +32,7 @@ cd /workspace
 
 IMG_WIDTH="${IMG_WIDTH:-${IMG_SIZE:-448}}"
 IMG_HEIGHT="${IMG_HEIGHT:-${IMG_SIZE:-448}}"
-MODEL_NAME="${MODEL_NAME:-my_yolo_model}"
+MODEL_NAME="${MODEL_NAME:-yolo-model}"
 OPERATOR_MODE="${OPERATOR_MODE:-recommended}"
 ONNX="${MODEL_NAME}.onnx"
 CVIMODEL="${MODEL_NAME}_int8.cvimodel"
@@ -115,12 +116,8 @@ scale = 0.00392156862745098, 0.00392156862745098, 0.00392156862745098
 labels = ${LABELS}
 EOF2
 
-FINAL_DIR="$(pwd)/outputs_${TS}"
+FINAL_DIR="$OUT_DIR"
 mkdir -p "$FINAL_DIR"
-cp "$OUT_DIR/${MODEL_NAME}_int8.cvimodel" "$FINAL_DIR/"
-cp "$OUT_DIR/${MODEL_NAME}.mud" "$FINAL_DIR/"
-cp "$OUT_DIR/classes.txt" "$FINAL_DIR/"
-cp "$OUT_DIR/${MODEL_NAME}.onnx" "$FINAL_DIR/"
 
 tar -czf "${FINAL_DIR}.tar.gz" -C "$(dirname "$FINAL_DIR")" "$(basename "$FINAL_DIR")"
 echo "Done: $FINAL_DIR"

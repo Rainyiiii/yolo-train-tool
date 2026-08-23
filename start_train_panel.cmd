@@ -3,7 +3,7 @@ setlocal
 cd /d "%~dp0"
 
 set "PS_EXE=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
-set "LOG_DIR=%~dp0logs"
+set "LOG_DIR=%~dp0workspace\logs"
 set "LOG_FILE=%LOG_DIR%\launcher.log"
 set "PROJECT_PYTHON=%~dp0.venv\Scripts\python.exe"
 
@@ -27,7 +27,7 @@ set "EXIT_CODE=%ERRORLEVEL%"
 
 if not "%EXIT_CODE%"=="0" (
   echo.
-  echo MyAutoTrain failed to start.
+  echo YOLO Team Training Platform failed to start.
   echo Log: %LOG_FILE%
   echo.
   type "%LOG_FILE%"
@@ -36,5 +36,5 @@ if not "%EXIT_CODE%"=="0" (
   exit /b %EXIT_CODE%
 )
 
-echo MyAutoTrain is running at http://127.0.0.1:8989/
+echo YOLO Team Training Platform is running at http://127.0.0.1:8989/
 exit /b 0

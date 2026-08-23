@@ -1,4 +1,4 @@
-# MyAutoTrain 使用说明
+# YOLO团队训练平台使用说明
 
 ## 1. 获取项目
 
@@ -13,25 +13,23 @@ cd yolo-train-tool
 
 ## 2. Windows 首次安装
 
-双击：
+普通队友直接双击发布页中的安装器：
 
 ```text
-一键安装并启动.cmd
+YOLO-Team-Training-Platform-Setup-v3.0.0-beta.exe
 ```
 
 安装器会自动：
 
-1. 检查 Python 3.10–3.14。
-2. 创建项目专用 `.venv`。
-3. 检测 NVIDIA GPU 并选择 CUDA 或 CPU PyTorch。
-4. 安装训练、ONNX 和推理依赖。
-5. 下载默认的 `yolo11n.pt`。
-6. 运行系统自检并启动网页面板。
+1. 默认安装到 `D:\YOLOTeamTrainingPlatform`；
+2. 静默安装 .NET 8 Desktop Runtime 和 WebView2 Runtime；
+3. 检查或安装 Python 3.10–3.14；
+4. 创建隔离 Python 环境；
+5. 检测 NVIDIA GPU 并选择 CUDA 或 CPU PyTorch；
+6. 安装 ONNX、`onnxruntime` 和训练依赖；
+7. 创建 Workspace 并启动 WebView2 桌面程序。
 
-以后使用：
-
-- `启动训练面板.cmd`：启动面板。
-- `关闭训练面板.cmd`：停止面板，不会删除数据和模型。
+以后双击桌面上的“YOLO团队训练平台”。源码开发者仍可使用 `启动YOLO团队训练平台.cmd`。
 
 ## 3. Ubuntu 首次安装
 
@@ -65,7 +63,7 @@ bash ubuntu_stop_train_panel.sh
 - Ubuntu 个人使用：`bash ubuntu_start_annotation.sh`
 - Ubuntu 局域网共享：`bash ubuntu_start_annotation.sh --share`
 
-个人模式只能从本机打开 <http://127.0.0.1:9000/>。共享模式会显示局域网地址，伙伴只需要浏览器，不需要安装 MyAutoTrain、Python 或 Docker。每台电脑都能保留自己的 `annotation_workspace`；需要交换独立成果时导出、导入 `.matproj.zip` 项目包。实时多人编辑则连接同一台共享主机，由编辑锁避免互相覆盖。
+个人模式只能从本机打开 <http://127.0.0.1:9000/>。共享模式会显示局域网地址，伙伴只需要浏览器，不需要安装平台、Python 或 Docker。每台电脑都能保留自己的 `Workspace/annotation-hub`；需要交换独立成果时导出、导入 `.ytp-project.zip` 项目包。实时多人编辑则连接同一台共享主机，由编辑锁避免互相覆盖。
 
 项目支持成员账号、按数量分配图片、提交与审核；审核通过后可导出 Ultralytics YOLO、COCO、Pascal VOC 和 LabelMe。完整流程见[本地优先协作标注](COLLABORATIVE_ANNOTATION.md)。
 
@@ -112,7 +110,7 @@ dataset/
 
 训练完成后，平台会保留最佳模型和训练结果。具体输出路径以页面提示为准。
 
-每次新训练还会生成 `training_manifest.json`，记录数据集、类别、训练参数和模型文件之间的对应关系。进入独立的“模型资产”页面即可按数据集查看所有训练模型；旧版输出可选择原数据集目录后扫描。详见[数据集与模型资产](MODEL_ASSETS.md)。
+每次新训练都会建立不可覆盖的运行目录并生成 `training-manifest.json`，记录数据集、类别、训练参数和模型文件之间的对应关系。进入“模型资产”页面即可按数据集查看训练模型。详见[数据集与模型资产](MODEL_ASSETS.md)。
 
 ## 7. 测试模型
 
@@ -127,7 +125,7 @@ dataset/
 
 ## 8. 多平台导出
 
-训练完成后进入“部署与导出”，选择 `best.pt`、目标平台和输出目录。平台会生成目标模型以及 `*.manifest.json` 部署清单。当前内置通用 ONNX、树莓派 NCNN、Rockchip RKNN、地瓜 RDK ONNX 交接、MaixCAM、TensorRT 和 OpenVINO 配置档，详见[设备适配文档](DEVICE_ADAPTERS.md)。
+训练完成后进入“部署与导出”，选择训练资产中的 `model-best.pt`、目标平台和输出目录。平台会生成目标模型以及 `*.manifest.json` 部署清单。当前内置通用 ONNX、树莓派 NCNN、Rockchip RKNN、地瓜 RDK ONNX 交接、MaixCAM、TensorRT 和 OpenVINO 配置档，详见[设备适配文档](DEVICE_ADAPTERS.md)。
 
 ONNX 仍是厂商工具链之间的主要交接格式。项目安装器会自动安装：
 
@@ -149,10 +147,10 @@ INT8 导出需要填写 `data.yaml` 并使用有代表性的校准数据。导�
 首次安装会根据设备生成：
 
 ```text
-train_panel_defaults.json
+Workspace/config/settings.json
 ```
 
-这是本机配置，不建议上传到 GitHub。发布包使用 `train_panel_defaults.example.json` 作为模板。
+这是本机配置，不应上传到 GitHub。完整目录见[目录与命名规范](DIRECTORY_AND_NAMING_STANDARD.md)。
 
 常用设置包括：
 
@@ -170,21 +168,21 @@ train_panel_defaults.json
 优先查看：
 
 ```text
-logs/install.log
-logs/install_ubuntu.log
-logs/launcher.log
-logs/panel.log
-logs/system_check.json
+Workspace/logs/installation.log
+Workspace/logs/installation-ubuntu.log
+Workspace/logs/panel.log
+Workspace/logs/annotation-server.log
+Workspace/logs/system-check.json
 ```
 
 如果面板无法启动，先运行系统自检，再确认 8989 端口没有被其他服务占用。
 
 ## 12. 分享给其他人
 
-Windows 维护者可以双击：
+Windows 维护者执行：
 
-```text
-制作队友部署包.cmd
+```powershell
+.\installer\windows\build-installer.ps1
 ```
 
-生成的 ZIP 会排除本机 `.venv`、日志、个人配置、训练数据和模型输出。分享前请确认 README、兼容性说明和使用说明已经符合你的实际发布方式。
+生成的 Setup 不包含本机 `.venv`、Workspace、日志、个人配置、训练数据或模型输出。`制作队友部署包.cmd` 只用于生成源码 ZIP，不是普通队友的首选安装方式。分享前请确认 README、兼容性说明和使用说明已经符合你的实际发布方式。
