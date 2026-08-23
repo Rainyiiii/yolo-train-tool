@@ -1,6 +1,5 @@
 # YOLO团队训练平台
 
-[![Windows Installer](https://github.com/Rainyiiii/yolo-train-tool/actions/workflows/windows-installer.yml/badge.svg)](https://github.com/Rainyiiii/yolo-train-tool/actions/workflows/windows-installer.yml)
 [![Latest Release](https://img.shields.io/github/v/release/Rainyiiii/yolo-train-tool?include_prereleases&label=release)](https://github.com/Rainyiiii/yolo-train-tool/releases)
 
 YOLO团队训练平台是一个面向 Windows、Ubuntu 和多种边缘部署平台的本地优先训练工具，把协作标注、数据检查、模型训练、模型资产、多平台导出和测试连接起来。每台电脑都能独立工作，也能临时成为局域网团队主机；部署端通过设备配置档适配树莓派、Rockchip/香橙派、地瓜机器人 RDK、MaixCAM、NVIDIA Jetson、Intel OpenVINO 等运行时。
