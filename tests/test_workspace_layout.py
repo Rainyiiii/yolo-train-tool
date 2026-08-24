@@ -15,6 +15,27 @@ class WorkspaceLayoutTests(unittest.TestCase):
         self.assertIn("function toggleSidebar()", HTML_PAGE)
         self.assertIn("yoloTeamPlatformSidebarCollapsed", HTML_PAGE)
 
+    def test_collapsed_sidebar_uses_semantic_icons_instead_of_numbers(self) -> None:
+        icon_names = (
+            "projects",
+            "train",
+            "dataset",
+            "models",
+            "assets",
+            "test",
+            "collab",
+            "label",
+            "convert",
+            "logs",
+        )
+        self.assertEqual(HTML_PAGE.count('class="nav-icon"'), len(icon_names))
+        for name in icon_names:
+            self.assertIn(f'id="nav-icon-{name}"', HTML_PAGE)
+            self.assertIn(f'href="#nav-icon-{name}"', HTML_PAGE)
+        self.assertNotIn("项目中心 <span>01</span>", HTML_PAGE)
+        self.assertIn('title="协作标注"', HTML_PAGE)
+        self.assertIn("body.sidebar-collapsed .nav button .nav-label{display:none}", HTML_PAGE)
+
     def test_mobile_falls_back_to_document_scrolling(self) -> None:
         self.assertIn("html,body{height:auto;overflow:auto}", HTML_PAGE)
         self.assertIn(".layout,body.sidebar-collapsed .layout{height:auto;grid-template-columns:1fr", HTML_PAGE)

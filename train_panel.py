@@ -2783,7 +2783,12 @@ body:before{display:none}
 .side{position:relative;top:0;height:100%;max-height:none;padding:10px 9px;border-width:0 1px 0 0;border-radius:0;box-shadow:none;overflow:auto}
 .main{display:block;height:100%;min-width:0;padding:16px 18px 24px;overflow:auto}
 .section{min-height:calc(100vh - 104px);margin:0;padding:20px;border-radius:14px}
-.nav button{min-height:39px;padding:6px 9px}
+.nav button{display:grid;grid-template-columns:26px minmax(0,1fr);gap:9px;min-height:39px;padding:6px 9px;text-align:left}
+.nav button .nav-icon{order:initial;display:grid;place-items:center;flex:none;width:26px;height:26px;color:#69778a;background:#f1f4f7;border:1px solid #e2e7ed;border-radius:8px}
+.nav button .nav-icon svg{display:block;width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.nav button .nav-label{order:initial;display:block;width:auto;height:auto;min-width:0;color:inherit;background:none;border:0;border-radius:0;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.nav button.active .nav-icon{color:#fff;background:var(--brand);border-color:var(--brand)}
+.nav button.active .nav-label{color:inherit;background:none;border:0}
 .sidebar-toggle{all:unset;box-sizing:border-box;display:flex;width:100%;min-height:34px;margin-bottom:8px;padding:6px 9px;align-items:center;justify-content:space-between;gap:8px;cursor:pointer;color:#657286;border:1px solid #dfe5ec;border-radius:9px;background:#f7f9fc;font-size:11px;font-weight:700}
 .sidebar-toggle:hover{color:#275fc8;border-color:#cbd8ee;background:#f1f5ff}
 .sidebar-toggle span{display:grid;width:20px;height:20px;place-items:center;color:#275fc8;border-radius:6px;background:#e7efff;font-size:18px;line-height:1;transition:transform .18s ease}
@@ -2791,8 +2796,10 @@ body.sidebar-collapsed .layout{grid-template-columns:68px minmax(0,1fr)}
 body.sidebar-collapsed .sidebar-toggle{justify-content:center;padding-inline:4px}
 body.sidebar-collapsed .sidebar-toggle b{display:none}
 body.sidebar-collapsed .sidebar-toggle span{transform:rotate(180deg)}
-body.sidebar-collapsed .nav button{justify-content:center;padding-inline:5px;font-size:0}
-body.sidebar-collapsed .nav button span{order:0;font-size:10px}
+body.sidebar-collapsed .nav button{grid-template-columns:1fr;justify-content:center;padding-inline:5px;font-size:13px}
+body.sidebar-collapsed .nav button .nav-icon{display:grid;justify-self:center;width:32px;height:32px;border-radius:9px}
+body.sidebar-collapsed .nav button .nav-icon svg{width:20px;height:20px}
+body.sidebar-collapsed .nav button .nav-label{display:none}
 body.sidebar-collapsed .status{display:none}
 }
 @media(max-width:980px){
@@ -2805,11 +2812,13 @@ html,body{height:auto;overflow:auto}
 .sidebar-toggle{display:none}
 .main{height:auto;padding:12px;overflow:visible}
 .section{min-height:0;margin:0;padding:18px}
-body.sidebar-collapsed .nav button{justify-content:center;padding:7px 10px;font-size:13px}
-body.sidebar-collapsed .nav button span{display:none}
+body.sidebar-collapsed .nav button{grid-template-columns:26px minmax(0,1fr);justify-content:center;padding:7px 10px;font-size:13px}
+body.sidebar-collapsed .nav button .nav-icon{display:grid}
+body.sidebar-collapsed .nav button .nav-label{display:block}
 body.sidebar-collapsed .status{display:none}
 }
-@media(max-width:720px){.main{padding:8px}.section{padding:16px}.hero .title{padding:10px 12px}}
+@media(max-width:980px){.nav button .nav-icon{display:grid}.nav button .nav-label{display:block}}
+@media(max-width:720px){.main{padding:8px}.section{padding:16px}.hero .title{padding:10px 12px}.nav button{grid-template-columns:22px minmax(0,1fr);gap:6px}.nav button .nav-icon{width:22px;height:22px;border:0;background:transparent}.nav button.active .nav-icon{color:var(--brand);background:transparent}.nav button .nav-label{font-size:12px}}
 @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}*,*:before,*:after{transition:none!important;animation:none!important}}
 </style>
 </head>
@@ -2833,18 +2842,30 @@ body.sidebar-collapsed .status{display:none}
 
   <div class="layout">
     <aside class="card side">
+      <svg class="nav-icon-defs" aria-hidden="true" width="0" height="0" style="position:absolute;overflow:hidden">
+        <symbol id="nav-icon-projects" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"></rect><rect x="14" y="3" width="7" height="7" rx="1.5"></rect><rect x="3" y="14" width="7" height="7" rx="1.5"></rect><rect x="14" y="14" width="7" height="7" rx="1.5"></rect></symbol>
+        <symbol id="nav-icon-train" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"></circle><path d="m10 8 6 4-6 4z"></path></symbol>
+        <symbol id="nav-icon-dataset" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"></ellipse><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"></path></symbol>
+        <symbol id="nav-icon-models" viewBox="0 0 24 24"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9zM4.5 7.8 12 12l7.5-4.2M12 12v9"></path></symbol>
+        <symbol id="nav-icon-assets" viewBox="0 0 24 24"><path d="M4 8h16v12H4zM3 4h18v4H3zM9 12h6"></path></symbol>
+        <symbol id="nav-icon-test" viewBox="0 0 24 24"><path d="M9 3h6M10 3v5l-5.5 9.5A2.3 2.3 0 0 0 6.5 21h11a2.3 2.3 0 0 0 2-3.5L14 8V3M7.5 15h9"></path><circle cx="10" cy="17.5" r=".7"></circle></symbol>
+        <symbol id="nav-icon-collab" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"></circle><circle cx="17" cy="9" r="2.5"></circle><path d="M3.5 20v-2a5.5 5.5 0 0 1 11 0v2M14.5 14.5a4.5 4.5 0 0 1 6 4.25V20"></path></symbol>
+        <symbol id="nav-icon-label" viewBox="0 0 24 24"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"></path><path d="m8 16 1.2-3.8L16.4 5 19 7.6l-7.2 7.2zM14.8 6.6l2.6 2.6"></path></symbol>
+        <symbol id="nav-icon-convert" viewBox="0 0 24 24"><rect x="3" y="7" width="13" height="13" rx="2"></rect><path d="M8 3h13v13M14 10l7-7M16 3h5v5"></path></symbol>
+        <symbol id="nav-icon-logs" viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6zM15 3v5h4M9 12h6M9 16h6"></path></symbol>
+      </svg>
       <button id="sidebar-toggle" class="sidebar-toggle" type="button" onclick="toggleSidebar()" aria-expanded="true" aria-label="收起导航"><span aria-hidden="true">‹</span><b>收起导航</b></button>
       <div class="nav" role="navigation" aria-label="平台功能导航">
-        <button data-tab="projects" class="active">项目中心 <span>01</span></button>
-        <button data-tab="train">开始训练 <span>02</span></button>
-        <button data-tab="dataset">准备数据 <span>03</span></button>
-        <button data-tab="models">基础模型 <span>04</span></button>
-        <button data-tab="assets">模型资产 <span>05</span></button>
-        <button data-tab="test">测试模型 <span>06</span></button>
-        <button data-tab="collab">协作标注 <span>07</span></button>
-        <button data-tab="label">快速标注 <span>08</span></button>
-        <button data-tab="convert">部署与导出 <span>09</span></button>
-        <button data-tab="logs">运行记录 <span>10</span></button>
+        <button data-tab="projects" class="active" title="项目中心"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><use href="#nav-icon-projects"></use></svg></span><span class="nav-label">项目中心</span></button>
+        <button data-tab="train" title="开始训练"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><use href="#nav-icon-train"></use></svg></span><span class="nav-label">开始训练</span></button>
+        <button data-tab="dataset" title="准备数据"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><use href="#nav-icon-dataset"></use></svg></span><span class="nav-label">准备数据</span></button>
+        <button data-tab="models" title="基础模型"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><use href="#nav-icon-models"></use></svg></span><span class="nav-label">基础模型</span></button>
+        <button data-tab="assets" title="模型资产"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><use href="#nav-icon-assets"></use></svg></span><span class="nav-label">模型资产</span></button>
+        <button data-tab="test" title="测试模型"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><use href="#nav-icon-test"></use></svg></span><span class="nav-label">测试模型</span></button>
+        <button data-tab="collab" title="协作标注"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><use href="#nav-icon-collab"></use></svg></span><span class="nav-label">协作标注</span></button>
+        <button data-tab="label" title="快速标注"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><use href="#nav-icon-label"></use></svg></span><span class="nav-label">快速标注</span></button>
+        <button data-tab="convert" title="部署与导出"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><use href="#nav-icon-convert"></use></svg></span><span class="nav-label">部署与导出</span></button>
+        <button data-tab="logs" title="运行记录"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><use href="#nav-icon-logs"></use></svg></span><span class="nav-label">运行记录</span></button>
 
       </div>
       <div class="status">
