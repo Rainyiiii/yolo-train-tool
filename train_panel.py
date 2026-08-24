@@ -2767,6 +2767,49 @@ html{scroll-behavior:smooth}body{color:var(--text);background:linear-gradient(18
 @media(max-width:980px){.wrap{width:min(100% - 24px,1440px);padding-top:12px}.hero .title{display:grid;grid-template-columns:auto 1fr auto}.hero h1{margin:0}.layout{grid-template-columns:1fr}.side{position:sticky;top:0;z-index:30;max-height:none;padding:7px;border-radius:13px}.nav{display:flex;grid-template-columns:none;gap:3px;overflow-x:auto;scrollbar-width:none}.nav::-webkit-scrollbar{display:none}.nav button{flex:1 0 auto;justify-content:center;min-height:40px;padding:7px 10px;white-space:nowrap}.nav button:hover{transform:none}.nav button.active{box-shadow:inset 0 -3px 0 var(--brand)}.nav button span{display:none}.status{display:none}.field,.field.sm,.label-config .field,.label-config .field.sm{grid-column:span 6}.section{padding:20px}}
 @media(max-width:720px){.wrap{width:min(100% - 16px,1440px)}.hero .title{grid-template-columns:auto 1fr;padding:13px 14px;min-height:0}.brand-mark{width:40px;height:40px;border-radius:12px}.brand-kicker{display:none}.hero h1{font-size:21px}.hero .subtitle{display:none}.hero .eyebrow{grid-column:1/-1;justify-self:stretch;justify-content:center}.field,.field.sm,.label-config .field,.label-config .field.sm{grid-column:1/-1}.section{padding:17px}.section>h2{font-size:20px}.project-summary{grid-template-columns:repeat(3,1fr)}.asset-summary{grid-template-columns:repeat(2,1fr)}.actions{align-items:stretch}.actions>.btn,.actions>.btns{width:100%}.actions>.btns .btn{flex:1}.input-action{flex-direction:column}.input-action .btn{width:auto}.split-controls{grid-template-columns:1fr}.quick-help{grid-template-columns:1fr 1fr}.toast{left:12px;right:12px;bottom:12px;max-width:none}}
 @media(max-width:480px){.project-summary{grid-template-columns:1fr}.quick-help{grid-template-columns:1fr}.section{padding:15px}.nav button span{display:none}.nav button{padding-inline:12px}.asset-summary{grid-template-columns:1fr 1fr}}
+/* v3.2.6 full-viewport desktop workspace */
+@media(min-width:981px){
+html,body{height:100%;overflow:hidden}
+body:before{display:none}
+.wrap{width:100%;height:100vh;margin:0;padding:0}
+.hero{height:64px;margin:0}
+.hero .title{display:grid;grid-template-columns:auto minmax(210px,auto) minmax(0,1fr) auto;gap:14px;align-items:center;width:100%;height:64px;min-height:64px;padding:8px 16px;border-width:0 0 1px;border-radius:0;box-shadow:0 1px 8px rgba(31,43,58,.07)}
+.brand-mark{width:40px;height:40px;border-radius:11px;font-size:16px}
+.brand-kicker{display:none}
+.hero h1{font-size:21px}
+.hero .subtitle{font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hero .eyebrow{padding:6px 9px;font-size:11px}
+.layout{height:calc(100vh - 64px);grid-template-columns:214px minmax(0,1fr);gap:0;transition:grid-template-columns .18s ease}
+.side{position:relative;top:0;height:100%;max-height:none;padding:10px 9px;border-width:0 1px 0 0;border-radius:0;box-shadow:none;overflow:auto}
+.main{display:block;height:100%;min-width:0;padding:16px 18px 24px;overflow:auto}
+.section{min-height:calc(100vh - 104px);margin:0;padding:20px;border-radius:14px}
+.nav button{min-height:39px;padding:6px 9px}
+.sidebar-toggle{all:unset;box-sizing:border-box;display:flex;width:100%;min-height:34px;margin-bottom:8px;padding:6px 9px;align-items:center;justify-content:space-between;gap:8px;cursor:pointer;color:#657286;border:1px solid #dfe5ec;border-radius:9px;background:#f7f9fc;font-size:11px;font-weight:700}
+.sidebar-toggle:hover{color:#275fc8;border-color:#cbd8ee;background:#f1f5ff}
+.sidebar-toggle span{display:grid;width:20px;height:20px;place-items:center;color:#275fc8;border-radius:6px;background:#e7efff;font-size:18px;line-height:1;transition:transform .18s ease}
+body.sidebar-collapsed .layout{grid-template-columns:68px minmax(0,1fr)}
+body.sidebar-collapsed .sidebar-toggle{justify-content:center;padding-inline:4px}
+body.sidebar-collapsed .sidebar-toggle b{display:none}
+body.sidebar-collapsed .sidebar-toggle span{transform:rotate(180deg)}
+body.sidebar-collapsed .nav button{justify-content:center;padding-inline:5px;font-size:0}
+body.sidebar-collapsed .nav button span{order:0;font-size:10px}
+body.sidebar-collapsed .status{display:none}
+}
+@media(max-width:980px){
+html,body{height:auto;overflow:auto}
+.wrap{width:100%;height:auto;padding-top:0}
+.hero{height:auto}
+.hero .title{height:auto;min-height:58px;border-width:0 0 1px;border-radius:0}
+.layout,body.sidebar-collapsed .layout{height:auto;grid-template-columns:1fr;gap:0}
+.side{position:sticky;top:0;height:auto;max-height:none;border-width:0 0 1px;border-radius:0;box-shadow:0 4px 12px rgba(31,43,58,.06)}
+.sidebar-toggle{display:none}
+.main{height:auto;padding:12px;overflow:visible}
+.section{min-height:0;margin:0;padding:18px}
+body.sidebar-collapsed .nav button{justify-content:center;padding:7px 10px;font-size:13px}
+body.sidebar-collapsed .nav button span{display:none}
+body.sidebar-collapsed .status{display:none}
+}
+@media(max-width:720px){.main{padding:8px}.section{padding:16px}.hero .title{padding:10px 12px}}
 @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}*,*:before,*:after{transition:none!important;animation:none!important}}
 </style>
 </head>
@@ -2790,6 +2833,7 @@ html{scroll-behavior:smooth}body{color:var(--text);background:linear-gradient(18
 
   <div class="layout">
     <aside class="card side">
+      <button id="sidebar-toggle" class="sidebar-toggle" type="button" onclick="toggleSidebar()" aria-expanded="true" aria-label="收起导航"><span aria-hidden="true">‹</span><b>收起导航</b></button>
       <div class="nav" role="navigation" aria-label="平台功能导航">
         <button data-tab="projects" class="active">项目中心 <span>01</span></button>
         <button data-tab="train">开始训练 <span>02</span></button>
@@ -3196,6 +3240,8 @@ let deleteConfirmUntil=0;
 
 const rawLabelPrefix={manual:false,value:''};
 function toast(msg){const el=document.getElementById('toast');el.textContent=msg;el.classList.add('show');setTimeout(()=>el.classList.remove('show'),2600)}
+function applySidebarState(collapsed){document.body.classList.toggle('sidebar-collapsed',collapsed);const toggle=document.getElementById('sidebar-toggle');if(!toggle)return;toggle.setAttribute('aria-expanded',String(!collapsed));toggle.setAttribute('aria-label',collapsed?'展开导航':'收起导航');const label=toggle.querySelector('b');if(label)label.textContent=collapsed?'展开导航':'收起导航'}
+function toggleSidebar(){const collapsed=!document.body.classList.contains('sidebar-collapsed');localStorage.setItem('yoloTeamPlatformSidebarCollapsed',collapsed?'1':'0');applySidebarState(collapsed)}
 function escapeHtml(value){return String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]))}
 function renderProjects(){const catalog=projectCatalog||{projects:[],summary:{}},summary=catalog.summary||{};setText('project-count',summary.project_count||0);setText('project-image-count',summary.image_count||0);setText('project-issue-count',summary.issue_count||0);const active=(catalog.projects||[]).find(item=>item.active);setText('project-active-note',active?`当前项目：${active.name}`:'尚未激活项目');const box=document.getElementById('project-list');if(!box)return;box.innerHTML='';if(!(catalog.projects||[]).length){box.innerHTML='<div class="empty">还没有项目。创建第一个项目后，数据、训练和模型会按项目归档。</div>';return}for(const project of catalog.projects){const dataset=project.dataset||{},card=document.createElement('article');card.className='project-card'+(project.active?' active':'');const labels=(project.labels||[]).map(label=>`<span class="asset-badge">${escapeHtml(label)}</span>`).join('');const issues=(dataset.issues||[]).map(issue=>`<span>• ${escapeHtml(issue)}</span>`).join('');const preview=(dataset.preview||[]).slice(0,12).map(item=>`<figure class="${item.has_label?'':'missing'}"><img loading="lazy" src="/api/project-image?project_id=${encodeURIComponent(project.id)}&path=${encodeURIComponent(item.relative_path)}" alt="${escapeHtml(item.name)}"><figcaption>${escapeHtml(item.name)}${item.has_label?'':' · 缺标注'}</figcaption></figure>`).join('');card.innerHTML=`<div class="project-head"><div><h3>${escapeHtml(project.name)}</h3><div class="asset-path">${escapeHtml(project.id)} · ${escapeHtml(project.dataset_root||project.root||'')}</div></div><div class="asset-badges"><span class="asset-badge ${project.active?'ok':''}">${project.active?'当前项目':'未激活'}</span><span class="asset-badge">${project.task==='classify'?'图像分类':'目标检测'}</span>${labels}</div></div><div class="project-health"><span class="health ${escapeHtml(dataset.health||'error')}">${dataset.health==='ok'?'数据就绪':dataset.health==='warning'?'需要检查':'暂无有效数据'}</span><span class="health">${dataset.image_count||0} 张图片</span><span class="health">${dataset.label_count||0} 个标注</span><span class="health">${dataset.box_count||0} 个框</span></div>${issues?`<div class="project-issues">${issues}</div>`:''}<div class="field full"><label>关联数据集目录</label><div class="input-action"><input class="project-root-input" value="${escapeHtml(project.dataset_root||project.root||'')}"><button class="btn choose-root">选择</button><button class="btn save-root">保存</button></div></div>${preview?`<div class="project-preview">${preview}</div>`:'<div class="empty">目录中还没有可预览图片。</div>'}<div class="actions"><span class="mini">更新于 ${escapeHtml(assetTime(project.updated_at))}</span><div class="btns"><button class="btn inspect-project">检查数据</button><button class="btn primary activate-project">${project.active?'进入训练':'激活项目'}</button></div></div>`;const rootInput=card.querySelector('.project-root-input');card.querySelector('.choose-root').onclick=async()=>{const selected=await chooseProjectRoot(rootInput.value);if(selected)rootInput.value=selected};card.querySelector('.save-root').onclick=()=>updatePlatformProject(project.id,{dataset_root:rootInput.value});card.querySelector('.inspect-project').onclick=()=>inspectPlatformProject(project.id);card.querySelector('.activate-project').onclick=()=>activatePlatformProject(project.id,true);box.appendChild(card)}}
 async function loadProjects(showMessage=false){try{const response=await fetch('/api/projects');if(!response.ok)throw new Error(`HTTP ${response.status}`);projectCatalog=await response.json();renderProjects();if(showMessage)toast('项目和数据集检查已刷新')}catch(error){toast(error.message)}}
@@ -3339,6 +3385,7 @@ document.querySelectorAll('.nav button').forEach(b=>b.onclick=()=>showTab(b.data
 document.querySelectorAll('input,select').forEach(el=>{const handler=()=>{if(el.id==='label_prefix') rawLabelPrefix.manual=true; if((el.id==='train_images_dir'||el.id==='train_annotations_dir')&&String(values.prepared_dataset_yaml||'').trim()){setInputValue('prepared_dataset_yaml',''); updatePreparedDatasetUI()} if(el.name==='train_task') updateTrainTaskUI(); if(el.name==='label_source_type') updateLabelSourceUI(); if(el.id==='train_ratio_percent'||el.id==='val_ratio_percent')updateSplitRatio(el.id); collect(); updateCurrentVideo(); saveValues(); updateCommands(); if(['train_images_dir','base_model','img_width','img_height','image_resize_mode','batch','train_cache'].includes(el.id)||el.name==='train_device'||el.name==='train_task') scheduleResourceEstimate(); if(['label_images_dir','label_annotations_dir','label_annotations_dir_images','label_images_input_dir'].includes(el.id)) scheduleLabelResultsRefresh()}; el.addEventListener('input',handler); el.addEventListener('change',handler)});
 if(localStorage.getItem('yoloTeamPlatformAdvanced')==='1'){document.body.classList.add('show-advanced');setText('advanced-toggle','收起更多设置')}
 enhanceFormAccessibility();
+applySidebarState(localStorage.getItem('yoloTeamPlatformSidebarCollapsed')==='1');
 showTab(localStorage.getItem('yoloTeamPlatformTab')||'projects');
 updateSplitRatio();
 loadDeviceProfiles();
