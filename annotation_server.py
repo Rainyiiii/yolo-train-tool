@@ -9,6 +9,7 @@ import mimetypes
 import os
 import socket
 import sys
+import threading
 import time
 import urllib.parse
 import webbrowser
@@ -24,6 +25,7 @@ from annotation_exports import export_dataset, import_project_package
 from annotation_store import AnnotationError, AnnotationStore
 from annotation_ui import ANNOTATION_HTML
 from platform_paths import ANNOTATION_HUB_DIR, PRODUCT_NAME
+from project_manager import PROJECTS_FILE, load_projects
 
 
 SCRIPT_ROOT = Path(__file__).resolve().parent
@@ -73,6 +75,29 @@ class AnnotationHTTPServer(ThreadingHTTPServer):
         super().__init__(address, AnnotationHandler)
         self.store = store
         self.shared = shared
+        self.platform_sync_lock = threading.Lock()
+        self.platform_sync_signature = -1
+        self.platform_sync_at = 0.0
+        self.platform_sync_result = {"created": 0, "updated": 0, "imported": 0, "skipped": 0}
+
+    def sync_platform_projects(self, actor: dict[str, Any], force: bool = False) -> dict[str, int]:
+        if actor["role"] not in {"admin", "reviewer"}:
+            return self.platform_sync_result
+        try:
+            signature = PROJECTS_FILE.stat().st_mtime_ns
+        except OSError:
+            signature = 0
+        now = time.monotonic()
+        if not force and signature == self.platform_sync_signature and now - self.platform_sync_at < 60:
+            return self.platform_sync_result
+        with self.platform_sync_lock:
+            self.platform_sync_result = self.store.sync_platform_projects(
+                actor,
+                load_projects(PROJECTS_FILE).get("projects", []),
+            )
+            self.platform_sync_signature = signature
+            self.platform_sync_at = time.monotonic()
+        return self.platform_sync_result
 
     def handle_error(self, request: Any, client_address: tuple[str, int]) -> None:
         error = sys.exc_info()[1]
@@ -210,7 +235,8 @@ class AnnotationHandler(BaseHTTPRequestHandler):
             user = self.current_user()
             assert user is not None
             if parsed.path == "/api/projects":
-                self.send_json({"items": self.server.store.list_projects(user)})
+                sync = self.server.sync_platform_projects(user, params.get("sync", [""])[0] == "1")
+                self.send_json({"items": self.server.store.list_projects(user), "sync": sync})
                 return
             if parsed.path == "/api/users":
                 self.send_json({"items": self.server.store.list_users(user)})
@@ -300,7 +326,21 @@ class AnnotationHandler(BaseHTTPRequestHandler):
                 self.send_json({"user": created})
                 return
             if self.path == "/api/projects":
-                project = self.server.store.create_project(user, body.get("name", ""), body.get("labels", []), body.get("source_dir") or None)
+                project = self.server.store.create_project(
+                    user,
+                    body.get("name", ""),
+                    body.get("labels", []),
+                    body.get("source_dir") or None,
+                    review_enabled=bool(body.get("review_enabled")),
+                )
+                self.send_json({"project": project})
+                return
+            if self.path == "/api/projects/review-mode":
+                project = self.server.store.set_project_review_mode(
+                    user,
+                    int(body.get("project_id", 0)),
+                    bool(body.get("enabled")),
+                )
                 self.send_json({"project": project})
                 return
             if self.path == "/api/projects/import-images":
@@ -324,7 +364,7 @@ class AnnotationHandler(BaseHTTPRequestHandler):
             if self.path == "/api/item/save":
                 item = self.server.store.save_item(
                     int(body.get("item_id", 0)), user, body.get("boxes", []),
-                    int(body.get("revision", -1)), bool(body.get("submit")),
+                    int(body.get("revision", -1)), bool(body.get("complete", body.get("submit"))),
                 )
                 self.send_json({"item": item})
                 return

@@ -231,7 +231,12 @@ def export_project_package(store: AnnotationStore, actor: dict[str, Any], projec
         manifest = {
             "schema_version": 1,
             "kind": "yolo_team_annotation_project",
-            "project": {"name": project["name"], "task_type": project["task_type"], "labels": project["labels"]},
+            "project": {
+                "name": project["name"],
+                "task_type": project["task_type"],
+                "labels": project["labels"],
+                "review_enabled": project.get("review_enabled", False),
+            },
             "dataset_version": version,
             "created_at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
             "items": manifest_items,
@@ -266,7 +271,12 @@ def import_project_package(store: AnnotationStore, actor: dict[str, Any], packag
             raise AnnotationError(f"项目包超过 {MAX_PACKAGE_ITEMS} 张图片的安全上限。")
         if sum(info.file_size for info in archive.infolist()) > MAX_PACKAGE_UNCOMPRESSED_BYTES:
             raise AnnotationError("项目包解压后的总大小超过 100GB，已停止导入。")
-        project = store.create_project(actor, f"{project_data.get('name') or package.stem}（导入）", labels)
+        project = store.create_project(
+            actor,
+            f"{project_data.get('name') or package.stem}（导入）",
+            labels,
+            review_enabled=bool(project_data.get("review_enabled", True)),
+        )
         project_id = project["id"]
         destination = store.projects_dir / str(project_id) / "images"
         destination.mkdir(parents=True, exist_ok=True)

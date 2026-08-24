@@ -129,6 +129,9 @@ class AnnotationStore:
                     name TEXT NOT NULL,
                     labels_json TEXT NOT NULL,
                     task_type TEXT NOT NULL DEFAULT 'detect',
+                    platform_project_id TEXT,
+                    source_root TEXT NOT NULL DEFAULT '',
+                    review_enabled INTEGER NOT NULL DEFAULT 0,
                     created_by INTEGER NOT NULL REFERENCES users(id),
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL
@@ -165,6 +168,17 @@ class AnnotationStore:
                 CREATE INDEX IF NOT EXISTS idx_items_assignee ON items(assignee_id, status);
                 CREATE INDEX IF NOT EXISTS idx_sessions_expiry ON sessions(expires_at);
                 """
+            )
+            columns = {row["name"] for row in connection.execute("PRAGMA table_info(projects)").fetchall()}
+            if "platform_project_id" not in columns:
+                connection.execute("ALTER TABLE projects ADD COLUMN platform_project_id TEXT")
+            if "source_root" not in columns:
+                connection.execute("ALTER TABLE projects ADD COLUMN source_root TEXT NOT NULL DEFAULT ''")
+            if "review_enabled" not in columns:
+                connection.execute("ALTER TABLE projects ADD COLUMN review_enabled INTEGER NOT NULL DEFAULT 0")
+            connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_platform_project_id "
+                "ON projects(platform_project_id) WHERE platform_project_id IS NOT NULL"
             )
 
     def needs_setup(self) -> bool:
@@ -256,6 +270,10 @@ class AnnotationStore:
         name: str,
         labels: Iterable[str],
         source_dir: str | Path | None = None,
+        *,
+        task_type: str = "detect",
+        platform_project_id: str = "",
+        review_enabled: bool = False,
     ) -> dict[str, Any]:
         if actor["role"] not in {"admin", "reviewer"}:
             raise AnnotationError("只有管理员或审核员可以创建项目。", 403)
@@ -269,18 +287,41 @@ class AnnotationStore:
                 clean_labels.append(value)
         if not clean_labels:
             raise AnnotationError("至少需要一个类别。")
+        if task_type != "detect":
+            raise AnnotationError("当前标注中心仅支持目标检测项目。")
+        source_root = str(Path(source_dir).expanduser().resolve()) if source_dir else ""
         now = _now()
         with self.connect() as connection:
             cursor = connection.execute(
-                "INSERT INTO projects(name,labels_json,created_by,created_at,updated_at) VALUES(?,?,?,?,?)",
-                (project_name, _json(clean_labels), actor["id"], now, now),
+                """INSERT INTO projects(
+                       name,labels_json,task_type,platform_project_id,source_root,review_enabled,
+                       created_by,created_at,updated_at
+                   ) VALUES(?,?,?,?,?,?,?,?,?)""",
+                (
+                    project_name, _json(clean_labels), task_type, platform_project_id or None,
+                    source_root, int(review_enabled), actor["id"], now, now,
+                ),
             )
             project_id = int(cursor.lastrowid)
             self._event(connection, project_id, None, actor["id"], "project_created", {"name": project_name})
         imported = self.import_images(actor, project_id, source_dir) if source_dir else 0
-        return {"id": project_id, "name": project_name, "labels": clean_labels, "imported": imported}
+        return {
+            "id": project_id,
+            "name": project_name,
+            "labels": clean_labels,
+            "imported": imported,
+            "platform_project_id": platform_project_id,
+            "review_enabled": bool(review_enabled),
+        }
 
-    def import_images(self, actor: dict[str, Any], project_id: int, source_dir: str | Path) -> int:
+    def import_images(
+        self,
+        actor: dict[str, Any],
+        project_id: int,
+        source_dir: str | Path,
+        *,
+        allow_empty: bool = False,
+    ) -> int:
         if actor["role"] not in {"admin", "reviewer"}:
             raise AnnotationError("只有管理员或审核员可以导入图片。", 403)
         source = Path(source_dir).expanduser().resolve()
@@ -291,6 +332,8 @@ class AnnotationStore:
         destination.mkdir(parents=True, exist_ok=True)
         candidates = sorted(path for path in source.rglob("*") if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS)
         if not candidates:
+            if allow_empty:
+                return 0
             raise AnnotationError("来源文件夹中没有找到支持的图片。")
         if len(candidates) > 100_000:
             raise AnnotationError("单次导入最多支持 100000 张图片，请拆分项目。")
@@ -322,6 +365,74 @@ class AnnotationStore:
             connection.execute("UPDATE projects SET updated_at=? WHERE id=?", (now, project_id))
             self._event(connection, project_id, None, actor["id"], "images_imported", {"count": imported, "source": str(source)})
         return imported
+
+    def sync_platform_projects(self, actor: dict[str, Any], platform_projects: Iterable[dict[str, Any]]) -> dict[str, int]:
+        """Create/update annotation projects from the platform registry without duplicating them."""
+        if actor["role"] not in {"admin", "reviewer"}:
+            return {"created": 0, "updated": 0, "imported": 0, "skipped": 0}
+        summary = {"created": 0, "updated": 0, "imported": 0, "skipped": 0}
+        for raw in platform_projects:
+            platform_id = str(raw.get("id") or "").strip()
+            name = str(raw.get("name") or "").strip()
+            task_type = str(raw.get("task") or "detect").strip().lower()
+            if not platform_id or not name or task_type != "detect":
+                summary["skipped"] += 1
+                continue
+            labels = list(dict.fromkeys(str(value).strip() for value in raw.get("labels", []) if str(value).strip())) or ["object"]
+            source_text = str(raw.get("dataset_root") or raw.get("root") or "").strip()
+            source = Path(source_text).expanduser().resolve() if source_text else None
+            now = _now()
+            with self.connect() as connection:
+                row = connection.execute(
+                    "SELECT id FROM projects WHERE platform_project_id=?",
+                    (platform_id,),
+                ).fetchone()
+                if row is None:
+                    legacy = connection.execute(
+                        "SELECT id FROM projects WHERE platform_project_id IS NULL AND name=? ORDER BY id LIMIT 2",
+                        (name,),
+                    ).fetchall()
+                    row = legacy[0] if len(legacy) == 1 else None
+                if row is None:
+                    cursor = connection.execute(
+                        """INSERT INTO projects(
+                               name,labels_json,task_type,platform_project_id,source_root,review_enabled,
+                               created_by,created_at,updated_at
+                           ) VALUES(?,?,?,?,?,0,?,?,?)""",
+                        (name, _json(labels), task_type, platform_id, str(source or ""), actor["id"], now, now),
+                    )
+                    annotation_project_id = int(cursor.lastrowid)
+                    self._event(connection, annotation_project_id, None, actor["id"], "platform_project_synced", {"platform_project_id": platform_id})
+                    summary["created"] += 1
+                else:
+                    annotation_project_id = int(row["id"])
+                    connection.execute(
+                        """UPDATE projects SET name=?,labels_json=?,task_type=?,platform_project_id=?,
+                           source_root=?,updated_at=? WHERE id=?""",
+                        (name, _json(labels), task_type, platform_id, str(source or ""), now, annotation_project_id),
+                    )
+                    summary["updated"] += 1
+            if source and source.is_dir():
+                summary["imported"] += self.import_images(actor, annotation_project_id, source, allow_empty=True)
+        return summary
+
+    def set_project_review_mode(self, actor: dict[str, Any], project_id: int, enabled: bool) -> dict[str, Any]:
+        if actor["role"] not in {"admin", "reviewer"}:
+            raise AnnotationError("只有管理员或审核员可以修改审核模式。", 403)
+        self.get_project(project_id, actor)
+        with self.connect() as connection:
+            connection.execute(
+                "UPDATE projects SET review_enabled=?,updated_at=? WHERE id=?",
+                (int(enabled), _now(), project_id),
+            )
+            if not enabled:
+                connection.execute(
+                    """UPDATE items SET status='approved',lock_user_id=NULL,lock_expires_at=NULL,
+                       updated_at=? WHERE project_id=? AND status='submitted'""",
+                    (_now(), project_id),
+                )
+            self._event(connection, project_id, None, actor["id"], "review_mode_changed", {"enabled": bool(enabled)})
+        return self.get_project(project_id, actor)
 
     def import_uploaded_image(self, actor: dict[str, Any], project_id: int, filename: str, raw: bytes) -> dict[str, Any]:
         if actor["role"] not in {"admin", "reviewer"}:
@@ -363,9 +474,9 @@ class AnnotationStore:
         return {"id": int(cursor.lastrowid), "name": relative.name, "relative_source": relative.as_posix()}
 
     def _project_access_clause(self, actor: dict[str, Any]) -> tuple[str, tuple[Any, ...]]:
-        if actor["role"] in {"admin", "reviewer"}:
-            return "", ()
-        return " WHERE EXISTS(SELECT 1 FROM items i WHERE i.project_id=p.id AND i.assignee_id=?)", (actor["id"],)
+        # Every signed-in member can see the project list. Annotators only see
+        # their own images plus the unclaimed queue inside each project.
+        return "", ()
 
     def list_projects(self, actor: dict[str, Any]) -> list[dict[str, Any]]:
         clause, params = self._project_access_clause(actor)
@@ -380,11 +491,16 @@ class AnnotationStore:
                     {clause} GROUP BY p.id ORDER BY p.updated_at DESC""",
                 params,
             ).fetchall()
-        return [self._project_public(row) for row in rows]
+        projects = [self._project_public(row) for row in rows]
+        if actor["role"] == "annotator":
+            for project in projects:
+                project.pop("source_root", None)
+        return projects
 
     def _project_public(self, row: sqlite3.Row) -> dict[str, Any]:
         result = dict(row)
         result["labels"] = _parse_json(result.pop("labels_json", "[]"), [])
+        result["review_enabled"] = bool(result.get("review_enabled"))
         for key in ("item_count", "approved_count", "submitted_count", "active_count"):
             result[key] = int(result.get(key) or 0)
         return result
@@ -400,7 +516,7 @@ class AnnotationStore:
         conditions = ["i.project_id=?"]
         params: list[Any] = [project_id]
         if actor["role"] == "annotator":
-            conditions.append("i.assignee_id=?")
+            conditions.append("(i.assignee_id=? OR (i.assignee_id IS NULL AND i.status='unassigned'))")
             params.append(actor["id"])
         if status and status in STATUSES:
             conditions.append("i.status=?")
@@ -432,8 +548,10 @@ class AnnotationStore:
             ).fetchone()
             if row is None:
                 raise AnnotationError("图片任务不存在。", 404)
-            if actor["role"] == "annotator" and row["assignee_id"] != actor["id"]:
-                raise AnnotationError("这张图片没有分配给你。", 403)
+            if actor["role"] == "annotator" and row["assignee_id"] not in (None, actor["id"]):
+                raise AnnotationError("这张图片已经由其他成员领取。", 403)
+            if actor["role"] == "annotator" and row["assignee_id"] is None and row["status"] != "unassigned":
+                raise AnnotationError("这张图片当前不能领取。", 403)
             if actor["role"] == "annotator" and row["status"] in {"submitted", "approved"}:
                 connection.commit()
                 return self.item_detail(item_id, actor)
@@ -442,8 +560,12 @@ class AnnotationStore:
                 owner = connection.execute("SELECT username FROM users WHERE id=?", (row["lock_user_id"],)).fetchone()
                 raise AnnotationError(f"该图片正在由 {owner['username'] if owner else '其他成员'} 编辑，请稍后再试。", 409)
             connection.execute(
-                "UPDATE items SET lock_user_id=?,lock_expires_at=?,status=CASE WHEN status='assigned' THEN 'in_progress' ELSE status END,updated_at=? WHERE id=?",
-                (actor["id"], now + LOCK_SECONDS, now, item_id),
+                """UPDATE items SET
+                       assignee_id=CASE WHEN assignee_id IS NULL AND ?='annotator' THEN ? ELSE assignee_id END,
+                       lock_user_id=?,lock_expires_at=?,
+                       status=CASE WHEN status IN ('unassigned','assigned') THEN 'in_progress' ELSE status END,
+                       updated_at=? WHERE id=?""",
+                (actor["role"], actor["id"], actor["id"], now + LOCK_SECONDS, now, item_id),
             )
             connection.commit()
         finally:
@@ -505,7 +627,7 @@ class AnnotationStore:
         try:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                """SELECT i.*,p.labels_json FROM items i JOIN projects p ON p.id=i.project_id WHERE i.id=?""",
+                """SELECT i.*,p.labels_json,p.review_enabled FROM items i JOIN projects p ON p.id=i.project_id WHERE i.id=?""",
                 (item_id,),
             ).fetchone()
             if row is None:
@@ -519,7 +641,7 @@ class AnnotationStore:
             if int(row["revision"]) != int(revision):
                 raise AnnotationError("标注已被更新，请重新载入后再保存。", 409)
             clean_boxes = self._validate_boxes(boxes, row, _parse_json(row["labels_json"], []))
-            status = "submitted" if submit else "in_progress"
+            status = ("submitted" if row["review_enabled"] else "approved") if submit else "in_progress"
             lock_user = None if submit else actor["id"]
             lock_expiry = None if submit else now + LOCK_SECONDS
             connection.execute(
@@ -527,7 +649,8 @@ class AnnotationStore:
                    lock_expires_at=?,review_comment='',updated_at=? WHERE id=?""",
                 (_json(clean_boxes), status, lock_user, lock_expiry, now, item_id),
             )
-            self._event(connection, row["project_id"], item_id, actor["id"], "submitted" if submit else "saved", {"boxes": len(clean_boxes)})
+            action = "submitted" if status == "submitted" else "completed" if status == "approved" else "saved"
+            self._event(connection, row["project_id"], item_id, actor["id"], action, {"boxes": len(clean_boxes)})
             connection.commit()
         finally:
             connection.close()

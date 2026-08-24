@@ -16,7 +16,7 @@ cd yolo-train-tool
 普通队友直接双击发布页中的安装器：
 
 ```text
-YOLO-Team-Training-Platform-Setup-v3.2.7-beta.exe
+YOLO-Team-Training-Platform-Setup-v3.2.8-beta.exe
 ```
 
 安装器会自动：
@@ -67,7 +67,7 @@ bash ubuntu_stop_train_panel.sh
 
 个人模式只能从本机打开 <http://127.0.0.1:9000/>。共享模式会显示局域网地址，伙伴只需要浏览器，不需要安装平台、Python 或 Docker。每台电脑都能保留自己的 `Workspace/annotation-hub`；需要交换独立成果时导出、导入 `.ytp-project.zip` 项目包。实时多人编辑则连接同一台共享主机，由编辑锁避免互相覆盖。
 
-项目支持成员账号、按数量分配图片、提交与审核；审核通过后可导出 Ultralytics YOLO、COCO、Pascal VOC 和 LabelMe。完整流程见[本地优先协作标注](COLLABORATIVE_ANNOTATION.md)。
+“项目中心”的目标检测项目和图片会自动同步到标注中心，无需重复创建。个人与团队模式都默认使用“完成并下一张”，团队成员打开公共图片时会自动领取，无需预先分配；完成数据可直接导出，只有管理员为项目开启“双人审核”后才进入审核流程。完整流程见[本地优先协作标注](COLLABORATIVE_ANNOTATION.md)。
 
 ## 5. 准备数据
 

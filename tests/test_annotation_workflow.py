@@ -1,0 +1,85 @@
+from __future__ import annotations
+
+import tempfile
+import unittest
+from pathlib import Path
+
+from PIL import Image
+
+from annotation_store import AnnotationStore
+from annotation_ui import ANNOTATION_HTML
+
+
+class AnnotationWorkflowTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.store = AnnotationStore(self.root / "annotation")
+        self.admin = self.store.create_user("admin", "password123", "admin")
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def _dataset(self) -> Path:
+        root = self.root / "dataset"
+        (root / "images").mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (80, 60), "white").save(root / "images" / "one.jpg")
+        Image.new("RGB", (80, 60), "gray").save(root / "images" / "two.jpg")
+        return root
+
+    def test_platform_projects_sync_without_duplicates(self) -> None:
+        dataset = self._dataset()
+        platform_project = {
+            "id": "parts",
+            "name": "零件检测",
+            "task": "detect",
+            "labels": ["part", "defect"],
+            "dataset_root": str(dataset),
+        }
+        first = self.store.sync_platform_projects(self.admin, [platform_project])
+        second = self.store.sync_platform_projects(self.admin, [platform_project])
+        projects = self.store.list_projects(self.admin)
+        self.assertEqual(first, {"created": 1, "updated": 0, "imported": 2, "skipped": 0})
+        self.assertEqual(second["imported"], 0)
+        self.assertEqual(len(projects), 1)
+        self.assertEqual(projects[0]["platform_project_id"], "parts")
+        self.assertEqual(projects[0]["item_count"], 2)
+        self.assertFalse(projects[0]["review_enabled"])
+
+    def test_review_is_optional_and_disabled_by_default(self) -> None:
+        project = self.store.create_project(self.admin, "简单标注", ["object"], self._dataset())
+        first = self.store.acquire_item(self.store.list_items(project["id"], self.admin)[0]["id"], self.admin)
+        completed = self.store.save_item(
+            first["id"],
+            self.admin,
+            [{"label": "object", "x": 5, "y": 6, "w": 20, "h": 18}],
+            first["revision"],
+            submit=True,
+        )
+        self.assertEqual(completed["status"], "approved")
+
+        enabled = self.store.set_project_review_mode(self.admin, project["id"], True)
+        self.assertTrue(enabled["review_enabled"])
+        second_id = next(item["id"] for item in self.store.list_items(project["id"], self.admin) if item["id"] != first["id"])
+        second = self.store.acquire_item(second_id, self.admin)
+        submitted = self.store.save_item(
+            second["id"],
+            self.admin,
+            [{"label": "object", "x": 8, "y": 9, "w": 24, "h": 20}],
+            second["revision"],
+            submit=True,
+        )
+        self.assertEqual(submitted["status"], "submitted")
+
+    def test_ui_exposes_crosshair_and_single_complete_action(self) -> None:
+        self.assertIn("function drawCrosshair", ANNOTATION_HTML)
+        self.assertIn("ctx.moveTo(0,y)", ANNOTATION_HTML)
+        self.assertIn("ctx.moveTo(x,0)", ANNOTATION_HTML)
+        self.assertIn("X ${x}  Y ${y}", ANNOTATION_HTML)
+        self.assertIn("完成并下一张", ANNOTATION_HTML)
+        self.assertIn("同步项目中心", ANNOTATION_HTML)
+        self.assertNotIn(">提交审核</button>", ANNOTATION_HTML)
+
+
+if __name__ == "__main__":
+    unittest.main()

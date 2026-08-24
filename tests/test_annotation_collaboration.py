@@ -21,7 +21,13 @@ class AnnotationCollaborationTest(unittest.TestCase):
         source.mkdir()
         Image.new("RGB", (100, 80), "white").save(source / "one.jpg")
         Image.new("RGB", (120, 90), "gray").save(source / "two.png")
-        self.project = self.store.create_project(self.admin, "demo", ["good", "defect"], source)
+        self.project = self.store.create_project(
+            self.admin,
+            "demo",
+            ["good", "defect"],
+            source,
+            review_enabled=True,
+        )
 
     def tearDown(self):
         self.temp.cleanup()
@@ -31,8 +37,8 @@ class AnnotationCollaborationTest(unittest.TestCase):
         assigned = self.store.assign_items(self.admin, self.project["id"], self.annotator["id"], count=1)
         self.assertEqual(assigned, 1)
         items = self.store.list_items(self.project["id"], self.annotator)
-        self.assertEqual(len(items), 1)
-        item = self.store.acquire_item(items[0]["id"], self.annotator)
+        assigned_item = next(value for value in items if value["assignee_id"] == self.annotator["id"])
+        item = self.store.acquire_item(assigned_item["id"], self.annotator)
         saved = self.store.save_item(item["id"], self.annotator, [{
             "label": "defect", "x": 10, "y": 12, "w": 30, "h": 25,
         }], item["revision"], submit=True)
@@ -58,7 +64,11 @@ class AnnotationCollaborationTest(unittest.TestCase):
     def test_project_package_moves_work_between_independent_workspaces(self):
         assigned = self.store.assign_items(self.admin, self.project["id"], self.annotator["id"], count=1)
         self.assertEqual(assigned, 1)
-        item = self.store.acquire_item(self.store.list_items(self.project["id"], self.annotator)[0]["id"], self.annotator)
+        assigned_item = next(
+            value for value in self.store.list_items(self.project["id"], self.annotator)
+            if value["assignee_id"] == self.annotator["id"]
+        )
+        item = self.store.acquire_item(assigned_item["id"], self.annotator)
         self.store.save_item(item["id"], self.annotator, [{"label": "good", "x": 1, "y": 2, "w": 20, "h": 30}], item["revision"], submit=True)
         package = export_dataset(self.store, self.admin, self.project["id"], "project")
         self.assertTrue(package.name.endswith(".ytp-project.zip"))
@@ -74,10 +84,28 @@ class AnnotationCollaborationTest(unittest.TestCase):
     def test_other_annotator_cannot_open_someone_elses_task(self):
         other = self.store.create_user("other", "password123", "annotator", self.admin)
         self.store.assign_items(self.admin, self.project["id"], self.annotator["id"], count=1)
-        item_id = self.store.list_items(self.project["id"], self.annotator)[0]["id"]
+        item_id = next(
+            value["id"] for value in self.store.list_items(self.project["id"], self.annotator)
+            if value["assignee_id"] == self.annotator["id"]
+        )
         with self.assertRaises(AnnotationError) as caught:
             self.store.acquire_item(item_id, other)
         self.assertEqual(caught.exception.status, 403)
+
+    def test_annotator_can_claim_from_shared_queue_without_assignment(self):
+        projects = self.store.list_projects(self.annotator)
+        self.assertEqual([value["id"] for value in projects], [self.project["id"]])
+        self.assertNotIn("source_root", projects[0])
+
+        shared = self.store.list_items(self.project["id"], self.annotator)
+        self.assertEqual(len(shared), 2)
+        claimed = self.store.acquire_item(shared[0]["id"], self.annotator)
+        self.assertEqual(claimed["assignee_id"], self.annotator["id"])
+        self.assertEqual(claimed["status"], "in_progress")
+
+        other = self.store.create_user("teammate", "password123", "annotator", self.admin)
+        other_items = self.store.list_items(self.project["id"], other)
+        self.assertNotIn(claimed["id"], [value["id"] for value in other_items])
 
     def test_unsafe_project_package_is_rejected_and_rolled_back(self):
         package = self.root / "unsafe.ytp-project.zip"
