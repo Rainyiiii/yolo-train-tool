@@ -59,6 +59,7 @@ var
   RuntimeReady: Boolean;
   RuntimeProgressPage: TOutputMarqueeProgressWizardPage;
   RuntimeLogMemo: TNewMemo;
+  RepairOptionsPage: TInputOptionWizardPage;
   DeleteWorkspaceOnUninstall: Boolean;
   WorkspaceChoiceMade: Boolean;
 
@@ -126,9 +127,18 @@ end;
 
 procedure InitializeWizard;
 begin
+  RepairOptionsPage := CreateInputOptionPage(
+    wpSelectDir,
+    '升级与运行环境修复',
+    '选择本次安装如何处理已有运行环境',
+    '默认执行增量更新：保留可用的 Python、PyTorch、ONNX Runtime 和其他依赖，只补装缺少或不兼容的组件。',
+    False, False);
+  RepairOptionsPage.Add('完整修复运行环境（删除并重建 Runtime，需要重新下载训练依赖）');
+  RepairOptionsPage.Values[0] := False;
+
   RuntimeProgressPage := CreateOutputMarqueeProgressPage(
     '正在安装运行环境',
-    '首次安装需要下载模型训练组件，请保持网络连接。');
+    '升级默认复用已有组件；首次安装或完整修复需要保持网络连接。');
   RuntimeProgressPage.SetText('正在准备安装...', '');
 
   RuntimeLogMemo := TNewMemo.Create(RuntimeProgressPage);
@@ -144,6 +154,60 @@ begin
   RuntimeLogMemo.WordWrap := False;
   RuntimeLogMemo.Font.Name := 'Consolas';
   RuntimeLogMemo.Font.Size := 8;
+end;
+
+function ExistingRuntimeAvailable(): Boolean;
+begin
+  Result := FileExists(ExpandConstant('{app}\Runtime\Python\Scripts\python.exe'));
+end;
+
+function FullRepairSelected(): Boolean;
+begin
+  Result := ExistingRuntimeAvailable() and RepairOptionsPage.Values[0];
+end;
+
+function ShouldSkipPage(PageID: Integer): Boolean;
+begin
+  Result := (PageID = RepairOptionsPage.ID) and not ExistingRuntimeAvailable();
+end;
+
+function DirectoryContainsVersionedFile(const RootPath, VersionPrefix, RelativeFile: String): Boolean;
+var
+  FindRec: TFindRec;
+  Candidate: String;
+begin
+  Result := False;
+  if not DirExists(RootPath) then
+    exit;
+  if FindFirst(AddBackslash(RootPath) + '*', FindRec) then begin
+    try
+      repeat
+        if (VersionPrefix = '') or (Pos(VersionPrefix, FindRec.Name) = 1) then begin
+          Candidate := PathCombine(PathCombine(RootPath, FindRec.Name), RelativeFile);
+          if FileExists(Candidate) then begin
+            Result := True;
+            exit;
+          end;
+        end;
+      until not FindNext(FindRec);
+    finally
+      FindClose(FindRec);
+    end;
+  end;
+end;
+
+function DotNetDesktopRuntimeAvailable(): Boolean;
+begin
+  Result := DirectoryContainsVersionedFile(
+    ExpandConstant('{autopf}\dotnet\shared\Microsoft.WindowsDesktop.App'),
+    '8.', 'Microsoft.WindowsDesktop.App.deps.json');
+end;
+
+function WebView2RuntimeAvailable(): Boolean;
+begin
+  Result := DirectoryContainsVersionedFile(
+    ExpandConstant('{pf32}\Microsoft\EdgeWebView\Application'),
+    '', 'msedgewebview2.exe');
 end;
 
 procedure AppendRuntimeLog(const S: String);
@@ -182,6 +246,7 @@ var
   ResultCode: Integer;
   PowerShellPath: String;
   RuntimeScript: String;
+  RuntimeArguments: String;
 begin
   if CurStep <> ssPostInstall then
     exit;
@@ -191,30 +256,51 @@ begin
   RuntimeProgressPage.Show;
   RuntimeProgressPage.Animate;
   try
-    RuntimeProgressPage.SetText('正在安装 .NET 8 Desktop Runtime...', '步骤 1 / 3');
-    AppendRuntimeLog('==> 安装 .NET 8 Desktop Runtime');
-    ExtractTemporaryFile('windowsdesktop-runtime-8-win-x64.exe');
-    if not Exec(ExpandConstant('{tmp}\windowsdesktop-runtime-8-win-x64.exe'), '/install /quiet /norestart', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
-      RaiseException('无法启动 .NET 8 Desktop Runtime 安装程序。');
-    if (ResultCode <> 0) and (ResultCode <> 3010) then
-      RaiseException(Format('.NET 8 Desktop Runtime 安装失败，退出码 %d。', [ResultCode]));
-    AppendRuntimeLog(Format('.NET 8 Desktop Runtime 完成（退出码 %d）', [ResultCode]));
+    if DotNetDesktopRuntimeAvailable() then begin
+      RuntimeProgressPage.SetText('已检测到 .NET 8 Desktop Runtime', '步骤 1 / 3 · 跳过重复安装');
+      AppendRuntimeLog('==> .NET 8 Desktop Runtime 已安装，跳过');
+    end else begin
+      RuntimeProgressPage.SetText('正在安装 .NET 8 Desktop Runtime...', '步骤 1 / 3');
+      AppendRuntimeLog('==> 安装 .NET 8 Desktop Runtime');
+      ExtractTemporaryFile('windowsdesktop-runtime-8-win-x64.exe');
+      if not Exec(ExpandConstant('{tmp}\windowsdesktop-runtime-8-win-x64.exe'), '/install /quiet /norestart', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+        RaiseException('无法启动 .NET 8 Desktop Runtime 安装程序。');
+      if (ResultCode <> 0) and (ResultCode <> 3010) then
+        RaiseException(Format('.NET 8 Desktop Runtime 安装失败，退出码 %d。', [ResultCode]));
+      AppendRuntimeLog(Format('.NET 8 Desktop Runtime 完成（退出码 %d）', [ResultCode]));
+    end;
 
-    RuntimeProgressPage.SetText('正在安装 Microsoft Edge WebView2 Runtime...', '步骤 2 / 3');
-    AppendRuntimeLog('==> 安装 Microsoft Edge WebView2 Runtime');
-    ExtractTemporaryFile('MicrosoftEdgeWebview2Setup.exe');
-    if not Exec(ExpandConstant('{tmp}\MicrosoftEdgeWebview2Setup.exe'), '/silent /install', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
-      RaiseException('无法启动 WebView2 Runtime 安装程序。');
-    if ResultCode <> 0 then
-      RaiseException(Format('WebView2 Runtime 安装失败，退出码 %d。', [ResultCode]));
-    AppendRuntimeLog('Microsoft Edge WebView2 Runtime 完成');
+    if WebView2RuntimeAvailable() then begin
+      RuntimeProgressPage.SetText('已检测到 Microsoft Edge WebView2 Runtime', '步骤 2 / 3 · 跳过重复安装');
+      AppendRuntimeLog('==> Microsoft Edge WebView2 Runtime 已安装，跳过');
+    end else begin
+      RuntimeProgressPage.SetText('正在安装 Microsoft Edge WebView2 Runtime...', '步骤 2 / 3');
+      AppendRuntimeLog('==> 安装 Microsoft Edge WebView2 Runtime');
+      ExtractTemporaryFile('MicrosoftEdgeWebview2Setup.exe');
+      if not Exec(ExpandConstant('{tmp}\MicrosoftEdgeWebview2Setup.exe'), '/silent /install', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+        RaiseException('无法启动 WebView2 Runtime 安装程序。');
+      if ResultCode <> 0 then
+        RaiseException(Format('WebView2 Runtime 安装失败，退出码 %d。', [ResultCode]));
+      AppendRuntimeLog('Microsoft Edge WebView2 Runtime 完成');
+    end;
 
-    RuntimeProgressPage.SetText('正在安装 Python、PyTorch、ONNX Runtime 与平台依赖...', '步骤 3 / 3 · 首次安装可能需要较长时间');
-    AppendRuntimeLog('==> 安装 Python、PyTorch、ONNX Runtime 与平台依赖');
+    if FullRepairSelected() then begin
+      RuntimeProgressPage.SetText('正在完整修复 Python、PyTorch、ONNX Runtime 与平台依赖...', '步骤 3 / 3 · 将重新下载训练组件');
+      AppendRuntimeLog('==> 完整修复运行环境（用户已选择）');
+    end else if ExistingRuntimeAvailable() then begin
+      RuntimeProgressPage.SetText('正在检查并增量更新运行环境...', '步骤 3 / 3 · 已有依赖会直接复用');
+      AppendRuntimeLog('==> 增量更新 Python、PyTorch、ONNX Runtime 与平台依赖');
+    end else begin
+      RuntimeProgressPage.SetText('正在首次安装 Python、PyTorch、ONNX Runtime 与平台依赖...', '步骤 3 / 3 · 首次安装可能需要较长时间');
+      AppendRuntimeLog('==> 首次安装 Python、PyTorch、ONNX Runtime 与平台依赖');
+    end;
     PowerShellPath := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
     RuntimeScript := ExpandConstant('{app}\App\install_runtime.ps1');
+    RuntimeArguments := '-NoLogo -NoProfile -NonInteractive -OutputFormat Text -ExecutionPolicy Bypass -File "' + RuntimeScript + '" -InstallRoot "' + ExpandConstant('{app}') + '" -NoStart';
+    if FullRepairSelected() then
+      RuntimeArguments := RuntimeArguments + ' -RepairRuntime';
     if not ExecAndLogOutput(PowerShellPath,
-      '-NoLogo -NoProfile -NonInteractive -OutputFormat Text -ExecutionPolicy Bypass -File "' + RuntimeScript + '" -InstallRoot "' + ExpandConstant('{app}') + '" -NoStart',
+      RuntimeArguments,
       ExpandConstant('{app}\App'), SW_SHOWNORMAL, ewWaitUntilTerminated, ResultCode, @RuntimeProcessLog) then
       RaiseException('无法启动平台运行环境安装程序。');
     if ResultCode <> 0 then

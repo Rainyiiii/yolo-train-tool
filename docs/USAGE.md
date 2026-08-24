@@ -16,7 +16,7 @@ cd yolo-train-tool
 普通队友直接双击发布页中的安装器：
 
 ```text
-YOLO-Team-Training-Platform-Setup-v3.2.1-beta.exe
+YOLO-Team-Training-Platform-Setup-v3.2.4-beta.exe
 ```
 
 安装器会自动：
@@ -28,6 +28,8 @@ YOLO-Team-Training-Platform-Setup-v3.2.1-beta.exe
 5. 检测 NVIDIA GPU 并选择 CUDA 或 CPU PyTorch；
 6. 安装 ONNX、`onnxruntime` 和训练依赖；
 7. 创建 Workspace 并启动 WebView2 桌面程序。
+
+以后直接运行新版安装包即可覆盖升级。默认模式会保留并检查现有 Runtime，依赖没有变化时不联网执行 pip 下载；需要新增依赖时只补装缺失或不兼容项。如果运行环境确实损坏，可在安装向导中主动勾选“完整修复运行环境”，重新创建 Python、PyTorch、ONNX Runtime 等组件。完整修复同样不会删除 Workspace 中的数据集、标注、模型和配置。
 
 以后双击桌面上的“YOLO团队训练平台”。源码开发者仍可使用 `启动YOLO团队训练平台.cmd`。
 

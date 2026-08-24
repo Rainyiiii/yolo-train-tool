@@ -1,6 +1,7 @@
 param(
     [string]$InstallRoot = "",
-    [switch]$NoStart
+    [switch]$NoStart,
+    [switch]$RepairRuntime
 )
 
 $ErrorActionPreference = "Stop"
@@ -24,6 +25,7 @@ $ConfigDir = Join-Path $WorkspaceRoot "config"
 $SettingsFile = Join-Path $ConfigDir "settings.json"
 $Requirements = Join-Path $AppRoot "requirements.txt"
 $DefaultsExample = Join-Path $AppRoot "train_panel_defaults.example.json"
+$DependencyStateFile = Join-Path $RuntimeRoot ".yolo-dependency-state.json"
 
 foreach ($path in @(
     $LogDir, $ConfigDir, (Join-Path $WorkspaceRoot "state"), (Join-Path $WorkspaceRoot "datasets"),
@@ -64,14 +66,89 @@ function Find-CompatiblePython {
     return $null
 }
 
+function Invoke-Probe([scriptblock]$Action) {
+    $savedErrorPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $null = & $Action
+        $probeExitCode = $LASTEXITCODE
+        return $probeExitCode -eq 0
+    } catch {
+        return $false
+    } finally {
+        $ErrorActionPreference = $savedErrorPreference
+    }
+}
+
+function Test-RuntimeDependencies {
+    if (!(Test-Path -LiteralPath $VenvPython)) { return $false }
+    $modulesReady = Invoke-Probe {
+        & $VenvPython -c "import importlib.util,sys; names=('torch','ultralytics','cv2','PIL','onnx','onnxsim','onnxslim','onnxruntime','yaml','psutil'); sys.exit(0 if all(importlib.util.find_spec(name) for name in names) else 1)"
+    }
+    if (!$modulesReady) { return $false }
+    return Invoke-Probe { & $VenvPython -m pip check }
+}
+
+function Read-DependencyState {
+    if (!(Test-Path -LiteralPath $DependencyStateFile)) { return $null }
+    try {
+        return Get-Content -LiteralPath $DependencyStateFile -Raw | ConvertFrom-Json
+    } catch {
+        return $null
+    }
+}
+
+function Write-DependencyState([string]$RequirementsHash, [string]$TorchProfile) {
+    $platformVersionFile = Join-Path $AppRoot "VERSION.txt"
+    $platformVersion = if (Test-Path -LiteralPath $platformVersionFile) {
+        (Get-Content -LiteralPath $platformVersionFile -Raw).Trim()
+    } else { "unknown" }
+    $state = [ordered]@{
+        schema_version = 1
+        requirements_sha256 = $RequirementsHash
+        torch_profile = $TorchProfile
+        platform_version = $platformVersion
+        verified_at = [DateTime]::UtcNow.ToString("o")
+    }
+    [IO.File]::WriteAllText(
+        $DependencyStateFile,
+        (($state | ConvertTo-Json -Depth 4) + [Environment]::NewLine),
+        (New-Object Text.UTF8Encoding($false))
+    )
+}
+
+function Remove-RuntimeForRepair {
+    if (!(Test-Path -LiteralPath $RuntimeRoot)) { return }
+    $resolvedRuntime = [IO.Path]::GetFullPath($RuntimeRoot).TrimEnd('\')
+    $expectedRuntime = if ($IsDeployed) {
+        [IO.Path]::GetFullPath((Join-Path $InstallRoot "Runtime\Python")).TrimEnd('\')
+    } else {
+        [IO.Path]::GetFullPath((Join-Path $AppRoot ".venv")).TrimEnd('\')
+    }
+    if (!$resolvedRuntime.Equals($expectedRuntime, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "拒绝删除异常的运行环境目录：$resolvedRuntime"
+    }
+    foreach ($serviceScriptName in @("annotation_service.py", "panel_service.py")) {
+        $serviceScript = Join-Path $AppRoot $serviceScriptName
+        if ((Test-Path -LiteralPath $VenvPython) -and (Test-Path -LiteralPath $serviceScript)) {
+            $null = Invoke-Probe { & $VenvPython $serviceScript stop }
+        }
+    }
+    Write-Step "完整修复：删除旧运行环境"
+    Remove-Item -LiteralPath $resolvedRuntime -Recurse -Force
+}
+
 try {
     Set-Location $AppRoot
     Write-Output "YOLO团队训练平台安装器"
     Write-Output "程序目录：$AppRoot"
     Write-Output "工作区：$WorkspaceRoot"
 
-    $python = Find-CompatiblePython
-    if (!$python) {
+    if ($RepairRuntime) { Remove-RuntimeForRepair }
+    $runtimeAlreadyExists = Test-Path -LiteralPath $VenvPython
+    $python = $null
+    if (!$runtimeAlreadyExists) { $python = Find-CompatiblePython }
+    if (!$runtimeAlreadyExists -and !$python) {
         Write-Step "安装 Python 3.14"
         $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
         if (!$winget) { throw "未找到 Python 3.10-3.14，也没有可用的 winget。" }
@@ -97,32 +174,56 @@ try {
         if (!$python) { throw "Python 安装完成后仍无法定位解释器，请查看安装日志。" }
     }
 
-    Write-Step "创建隔离的 Python 运行环境（Python $($python.Version)）"
-    if (!(Test-Path -LiteralPath $VenvPython)) {
+    if (!$runtimeAlreadyExists) {
+        Write-Step "创建隔离的 Python 运行环境（Python $($python.Version)）"
         & $python.File @($python.Args) -m venv $RuntimeRoot
         if ($LASTEXITCODE -ne 0) { throw "创建 Python 运行环境失败。" }
+    } else {
+        $runtimeVersion = & $VenvPython -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
+        if ($LASTEXITCODE -ne 0) { throw "已有 Python 运行环境无法启动，请选择完整修复。" }
+        Write-Step "复用已有 Python $runtimeVersion 运行环境"
     }
-
-    Write-Step "安装基础工具和模型训练依赖"
-    & $VenvPython -m pip install --upgrade pip setuptools wheel
-    if ($LASTEXITCODE -ne 0) { throw "pip 更新失败。" }
 
     $hasNvidia = $null -ne (Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue)
-    $savedErrorPreference = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
-    # Probe without importing torch.  A missing module then returns exit code 1
-    # without writing a traceback that Windows PowerShell 5.1 reports as a
-    # NativeCommandError in the installation log.
-    & $VenvPython -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('torch') else 1)"
-    $torchReady = $LASTEXITCODE -eq 0
-    $ErrorActionPreference = $savedErrorPreference
-    if (!$torchReady) {
+    $torchProfile = if ($hasNvidia) { "cu128" } else { "cpu" }
+    $requirementsHash = (Get-FileHash -LiteralPath $Requirements -Algorithm SHA256).Hash
+    $dependencyStateFileExists = Test-Path -LiteralPath $DependencyStateFile
+    $dependencyState = Read-DependencyState
+    $stateMatches = $null -ne $dependencyState -and
+        $dependencyState.requirements_sha256 -eq $requirementsHash -and
+        $dependencyState.torch_profile -eq $torchProfile
+    $legacyRuntimeReady = !$dependencyStateFileExists -and $null -eq $dependencyState -and (Test-RuntimeDependencies)
+    $incrementalRuntimeReady = !$RepairRuntime -and ($stateMatches -or $legacyRuntimeReady) -and (Test-RuntimeDependencies)
+
+    if ($incrementalRuntimeReady) {
+        Write-Step "运行环境与当前版本一致，跳过依赖下载"
+    } else {
+        Write-Step $(if ($RepairRuntime) { "完整安装模型训练依赖" } else { "增量补齐模型训练依赖" })
+        if (!$runtimeAlreadyExists -or $RepairRuntime) {
+            & $VenvPython -m pip install --upgrade pip setuptools wheel
+            if ($LASTEXITCODE -ne 0) { throw "pip 初始化失败。" }
+        }
+
+        $torchReady = Invoke-Probe {
+            & $VenvPython -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('torch') else 1)"
+        }
+        $torchProfileChanged = $null -ne $dependencyState -and $dependencyState.torch_profile -ne $torchProfile
+        if (!$torchReady -or $torchProfileChanged) {
         $torchIndex = if ($hasNvidia) { "https://download.pytorch.org/whl/cu128" } else { "https://download.pytorch.org/whl/cpu" }
-        & $VenvPython -m pip install --upgrade torch torchvision torchaudio --index-url $torchIndex
-        if ($LASTEXITCODE -ne 0) { throw "PyTorch 安装失败。" }
+            $torchArguments = @("-m", "pip", "install", "--upgrade")
+            if ($torchProfileChanged) { $torchArguments += "--force-reinstall" }
+            $torchArguments += @("torch", "torchvision", "torchaudio", "--index-url", $torchIndex)
+            & $VenvPython @torchArguments
+            if ($LASTEXITCODE -ne 0) { throw "PyTorch 安装失败。" }
+        }
+        # Deliberately omit --upgrade here.  pip then keeps every installed
+        # package that already satisfies requirements.txt and downloads only
+        # missing or incompatible dependencies.
+        & $VenvPython -m pip install -r $Requirements
+        if ($LASTEXITCODE -ne 0) { throw "平台依赖安装失败。" }
+        if (!(Test-RuntimeDependencies)) { throw "依赖安装完成，但运行环境健康检查未通过。" }
     }
-    & $VenvPython -m pip install --upgrade -r $Requirements
-    if ($LASTEXITCODE -ne 0) { throw "平台依赖安装失败。" }
+    Write-DependencyState $requirementsHash $torchProfile
 
     Write-Step "创建规范化工作区配置"
     $settings = if (Test-Path -LiteralPath $SettingsFile) {

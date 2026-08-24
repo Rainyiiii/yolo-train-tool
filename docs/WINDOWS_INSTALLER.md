@@ -5,7 +5,7 @@
 队友只需要运行：
 
 ```text
-YOLO-Team-Training-Platform-Setup-v3.2.1-beta.exe
+YOLO-Team-Training-Platform-Setup-v3.2.4-beta.exe
 ```
 
 安装器默认选择 `D:\YOLOTeamTrainingPlatform`，并自动完成：
@@ -19,7 +19,7 @@ YOLO-Team-Training-Platform-Setup-v3.2.1-beta.exe
 7. 创建规范化 Workspace；
 8. 创建桌面和开始菜单快捷方式。
 
-首次安装需要联网下载 Python/PyTorch/PyPI 依赖，耗时取决于网络和显卡版本。安装器内的“正在安装运行环境”页面会显示三个阶段和实时滚动输出；完整日志同时写入 `D:\YOLOTeamTrainingPlatform\Workspace\logs\installation.log`。安装失败时平台不会被启动，请保留该日志用于排错。
+首次安装需要联网下载 Python/PyTorch/PyPI 依赖，耗时取决于网络和显卡版本。覆盖安装新版时默认执行增量更新：根据依赖清单指纹和本地健康检查复用已有 Runtime；只有缺少组件、依赖要求变化或健康检查失败时才执行补装，并且不会无条件升级全部包。已有安装会显示“升级与运行环境修复”页面，“完整修复运行环境”默认不勾选；仅在用户主动勾选后删除并重建当前安装目录内的 Runtime，Workspace 不受影响。安装器内的“正在安装运行环境”页面会显示三个阶段和实时滚动输出；完整日志同时写入 `D:\YOLOTeamTrainingPlatform\Workspace\logs\installation.log`。安装失败时平台不会被启动，请保留该日志用于排错。
 
 WebView2 桌面程序只加载本机回环地址的平台页面，默认端口为 8989。它不会重复启动 YOLO 训练服务：发现旧服务时询问是否关闭，选择“否”会保留旧服务并退出；只有端口被其他软件占用时才选择备用端口。外部文档链接交给系统浏览器，下载文件保存到 `Workspace/exports/downloads`。关闭桌面窗口时只停止当前窗口启动的训练面板，不删除工作区，也不会误停独立运行的协作标注服务。启动诊断记录在 `Workspace/logs/launcher.log`。
 

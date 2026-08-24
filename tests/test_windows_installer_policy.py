@@ -6,12 +6,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SETUP_SCRIPT = ROOT / "installer" / "windows" / "setup.iss"
+RUNTIME_SCRIPT = ROOT / "install_runtime.ps1"
 
 
 class WindowsInstallerUninstallPolicyTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.script = SETUP_SCRIPT.read_text(encoding="utf-8")
+        cls.runtime_script = RUNTIME_SCRIPT.read_text(encoding="utf-8")
 
     def test_generated_program_directories_are_removed_explicitly(self) -> None:
         for directory in ("Runtime", "App", "Desktop"):
@@ -33,6 +35,24 @@ class WindowsInstallerUninstallPolicyTest(unittest.TestCase):
         self.assertNotIn("DelTree(ExpandConstant('{app}')", self.script)
         self.assertNotIn("DelTree(InstallRoot", self.script)
         self.assertIn('Type: dirifempty; Name: "{app}"', self.script)
+
+    def test_upgrade_defaults_to_incremental_runtime_reuse(self) -> None:
+        self.assertIn("DotNetDesktopRuntimeAvailable", self.script)
+        self.assertIn("WebView2RuntimeAvailable", self.script)
+        self.assertIn("步骤 1 / 3 · 跳过重复安装", self.script)
+        self.assertIn("步骤 2 / 3 · 跳过重复安装", self.script)
+        self.assertIn(".yolo-dependency-state.json", self.runtime_script)
+        self.assertIn("Test-RuntimeDependencies", self.runtime_script)
+        self.assertIn("跳过依赖下载", self.runtime_script)
+        self.assertIn("-m pip install -r $Requirements", self.runtime_script)
+        self.assertNotIn("-m pip install --upgrade -r $Requirements", self.runtime_script)
+
+    def test_full_runtime_repair_requires_explicit_installer_choice(self) -> None:
+        self.assertIn("RepairOptionsPage.Values[0] := False", self.script)
+        self.assertIn("完整修复运行环境", self.script)
+        self.assertIn("RuntimeArguments := RuntimeArguments + ' -RepairRuntime'", self.script)
+        self.assertIn("[switch]$RepairRuntime", self.runtime_script)
+        self.assertIn("Remove-RuntimeForRepair", self.runtime_script)
 
 
 if __name__ == "__main__":

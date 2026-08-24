@@ -12,7 +12,7 @@ YOLO团队训练平台是一个面向 Windows、Ubuntu 和多种边缘部署平�
 
 ## 队友第一次使用
 
-1. 双击 `YOLO-Team-Training-Platform-Setup-v3.2.3-beta.exe`。
+1. 双击 `YOLO-Team-Training-Platform-Setup-v3.2.4-beta.exe`。
 2. 保持默认安装目录 `D:\YOLOTeamTrainingPlatform`，点击安装。
 3. 安装器自动准备 .NET、WebView2、Python、PyTorch、ONNX Runtime 和平台依赖。
 4. 安装完成后从桌面打开“YOLO团队训练平台”。
@@ -21,7 +21,7 @@ YOLO团队训练平台是一个面向 Windows、Ubuntu 和多种边缘部署平�
 
 平台新建数据集时默认按照训练 80% / 验证 10% / 测试 10% 划分。训练集用于学习，验证集用于选择最佳模型，测试集只在训练完成后对 `best.pt` 做独立评估；导入已有 YOLO 数据集时保留其原始 `train / valid / test`。
 
-第一次安装需要联网下载训练组件，所需时间取决于网络速度。安装器会实时显示并自动滚动安装日志，完整记录同时保存在 `D:\YOLOTeamTrainingPlatform\Workspace\logs\installation.log`。
+第一次安装需要联网下载训练组件，所需时间取决于网络速度。以后直接运行新版安装包会默认执行增量更新：保留健康的 Python、PyTorch、ONNX Runtime 和其他依赖，仅更新程序或补齐变化的组件。只有在安装向导中主动勾选“完整修复运行环境”才会删除并重建 Runtime；两种模式都不会改动 Workspace。安装器会实时显示并自动滚动安装日志，完整记录同时保存在 `D:\YOLOTeamTrainingPlatform\Workspace\logs\installation.log`。
 
 开发源码模式仍保留以下脚本：
 
@@ -62,7 +62,7 @@ Ubuntu 上访问：<http://127.0.0.1:8989/>。如果要从其他电脑访问，�
 维护者运行 `installer/windows/build-installer.ps1`，程序会在 `dist` 文件夹生成：
 
 ```text
-YOLO-Team-Training-Platform-Setup-v3.2.3-beta.exe
+YOLO-Team-Training-Platform-Setup-v3.2.4-beta.exe
 ```
 
 安装器不会打包本机 Workspace、私人路径、训练数据、日志和训练结果。
