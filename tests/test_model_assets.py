@@ -25,6 +25,7 @@ class ModelAssetsTest(unittest.TestCase):
             (output / "model-best.onnx").write_bytes(b"onnx")
             (output / "dataset-classes.txt").write_text("good\ndefect\n", encoding="utf-8")
             (output / "training-metrics.csv").write_text("epoch,metrics/mAP50(B)\n4,0.812\n", encoding="utf-8")
+            (output / "test-evaluation").mkdir()
             args = argparse.Namespace(
                 stop_export_signal="", train_task="detect", project_name="widgets",
                 model_name="widget", base_model="yolo11n.pt", img_height=480, img_width=640,
@@ -63,6 +64,7 @@ class ModelAssetsTest(unittest.TestCase):
             self.assertEqual(run["association"], "manifest")
             self.assertEqual(run["classes"], ["good", "defect"])
             self.assertEqual(run["metrics"]["metrics/mAP50(B)"], 0.812)
+            self.assertTrue(next(item for item in run["artifacts"] if item["kind"] == "test_evaluation")["exists"])
             self.assertEqual(run["deployments"][0]["format"], "ncnn")
 
     def test_directory_without_manifest_is_not_indexed(self):

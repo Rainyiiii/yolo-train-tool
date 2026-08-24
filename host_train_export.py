@@ -173,6 +173,42 @@ def parse_train_ratio_percent(value):
     return ratio
 
 
+def parse_split_ratios(train_value, val_value):
+    train_ratio = parse_train_ratio_percent(train_value)
+    try:
+        val_ratio = float(val_value)
+    except (TypeError, ValueError):
+        raise SystemExit("--val-ratio-percent 必须是 1 到 99 的数字")
+    if not 1 <= val_ratio < 100:
+        raise SystemExit("--val-ratio-percent 必须在 1 到 99 之间")
+    if train_ratio + val_ratio > 100:
+        raise SystemExit("训练集与验证集比例之和不能超过 100%")
+    return {"train": train_ratio, "val": val_ratio, "test": 100.0 - train_ratio - val_ratio}
+
+
+def split_counts(total, train_ratio_percent=80, val_ratio_percent=10):
+    ratios = parse_split_ratios(train_ratio_percent, val_ratio_percent)
+    active = [name for name in ("train", "val", "test") if ratios[name] > 0]
+    if total < len(active):
+        labels = {"train": "训练集", "val": "验证集", "test": "测试集"}
+        raise SystemExit(f"至少需要 {len(active)} 张有效图片，才能划分" + "、".join(labels[name] for name in active))
+
+    raw = {name: total * ratios[name] / 100.0 for name in active}
+    counts = {name: int(raw[name]) for name in active}
+    for name in sorted(active, key=lambda item: (raw[item] - counts[item], ratios[item]), reverse=True)[:total - sum(counts.values())]:
+        counts[name] += 1
+
+    for name in active:
+        if counts[name] > 0:
+            continue
+        donors = sorted((item for item in active if counts[item] > 1), key=lambda item: (counts[item], ratios[item]), reverse=True)
+        if not donors:
+            raise SystemExit("数据量不足，无法保证每个启用的数据子集至少包含一张图片")
+        counts[donors[0]] -= 1
+        counts[name] = 1
+    return {name: counts.get(name, 0) for name in ("train", "val", "test")}
+
+
 def validate_image_dimensions(args):
     legacy_size = args.img_size
     if args.img_width is None:
@@ -252,9 +288,7 @@ def transform_image_and_boxes(image_path: Path, boxes, source_size, target_size,
     return image, [box for box in (clip_box(box, target_width, target_height) for box in transformed) if box]
 
 
-def prepare_voc_yolo(images_dir: Path, annotations_dir: Path, out: Path, train_ratio_percent=80, seed=42, img_width=448, img_height=448, resize_mode="letterbox"):
-    train_ratio_percent = parse_train_ratio_percent(train_ratio_percent)
-    val_ratio = max(0.0, min(0.99, (100.0 - train_ratio_percent) / 100.0))
+def prepare_voc_yolo(images_dir: Path, annotations_dir: Path, out: Path, train_ratio_percent=80, val_ratio_percent=10, seed=42, img_width=448, img_height=448, resize_mode="letterbox"):
     img_dir = images_dir.resolve()
     ann_dir = annotations_dir.resolve()
     if not img_dir.is_dir() or not ann_dir.is_dir():
@@ -292,14 +326,17 @@ def prepare_voc_yolo(images_dir: Path, annotations_dir: Path, out: Path, train_r
 
     if not records:
         raise SystemExit("No valid image/xml records found")
-    if len(records) < 2:
-        raise SystemExit("至少需要 2 张有效标注图片，才能划分训练集和验证集")
-
     random.seed(seed)
     random.shuffle(records)
-    val_n = int(round(len(records) * val_ratio))
-    val_n = max(1, min(val_n, len(records) - 1))
-    splits = {"val": records[:val_n], "train": records[val_n:]}
+    counts = split_counts(len(records), train_ratio_percent, val_ratio_percent)
+    test_end = counts["test"]
+    val_end = test_end + counts["val"]
+    splits = {
+        "test": records[:test_end],
+        "val": records[test_end:val_end],
+        "train": records[val_end:],
+    }
+    splits = {name: items for name, items in splits.items() if items}
     class_ids = {name: index for index, name in enumerate(classes)}
 
     output_counts = {}
@@ -325,25 +362,29 @@ def prepare_voc_yolo(images_dir: Path, annotations_dir: Path, out: Path, train_r
             (label_output_dir / f"{output_stem}.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
             written += 1
         output_counts[split] = written
-    if not output_counts.get("train") or not output_counts.get("val"):
-        raise SystemExit("当前裁剪方式移除了训练集或验证集的全部标注框；请改用等比缩放或拉伸。")
+    required_splits = [name for name in ("train", "val", "test") if counts[name] > 0]
+    missing_splits = [name for name in required_splits if not output_counts.get(name)]
+    if missing_splits:
+        raise SystemExit(f"当前裁剪方式移除了 {', '.join(missing_splits)} 数据集的全部标注框；请改用等比缩放或拉伸。")
 
     dataset_yaml = out / "dataset.yaml"
+    split_yaml = "train: images/train\nval: images/val\n"
+    if counts["test"]:
+        split_yaml += "test: images/test\n"
     dataset_yaml.write_text(
-        f"path: {out.as_posix()}\ntrain: images/train\nval: images/val\nnames:\n"
+        f"path: {out.as_posix()}\n{split_yaml}names:\n"
         + "".join(f"  {i}: {name}\n" for i, name in enumerate(classes)),
         encoding="utf-8",
     )
     (out / "classes.txt").write_text("\n".join(classes) + "\n", encoding="utf-8")
     print(f"classes={classes}")
     print(f"image_resize_mode={resize_mode} target_size={img_width}x{img_height}")
-    print(f"train={len(splits['train'])} val={len(splits['val'])}")
+    print(" ".join(f"{name}={len(splits.get(name, []))}" for name in ("train", "val", "test")))
     return dataset_yaml, classes
 
 
-def prepare_classification_yolo(images_dir: Path, out: Path, train_ratio_percent=80, seed=42):
+def prepare_classification_yolo(images_dir: Path, out: Path, train_ratio_percent=80, val_ratio_percent=10, seed=42):
     """按“图片根目录/类别名/图片”结构生成 Ultralytics 分类训练集。"""
-    train_ratio_percent = parse_train_ratio_percent(train_ratio_percent)
     source_root = images_dir.resolve()
     if not source_root.is_dir():
         raise SystemExit("分类 Images Dir 必须是有效文件夹，且下级目录为类别名")
@@ -360,11 +401,16 @@ def prepare_classification_yolo(images_dir: Path, out: Path, train_ratio_percent
             path for path in (source_root / class_name).rglob("*")
             if path.is_file() and path.suffix.lower() in allowed_extensions
         )
-        if len(images) < 2:
-            raise SystemExit(f"分类 {class_name} 至少需要 2 张图片，才能划分训练集和验证集")
         randomizer.shuffle(images)
-        val_count = max(1, min(int(round(len(images) * (100.0 - train_ratio_percent) / 100.0)), len(images) - 1))
-        splits = {"val": images[:val_count], "train": images[val_count:]}
+        split_size = split_counts(len(images), train_ratio_percent, val_ratio_percent)
+        test_end = split_size["test"]
+        val_end = test_end + split_size["val"]
+        splits = {
+            "test": images[:test_end],
+            "val": images[test_end:val_end],
+            "train": images[val_end:],
+        }
+        splits = {name: items for name, items in splits.items() if items}
         for split, items in splits.items():
             target_dir = out / split / class_name
             target_dir.mkdir(parents=True, exist_ok=True)
@@ -372,7 +418,7 @@ def prepare_classification_yolo(images_dir: Path, out: Path, train_ratio_percent
                 # 同类的重复文件名用序号区分，避免覆盖。
                 target_name = f"{index:06d}_{image_path.name}"
                 shutil.copy2(image_path, target_dir / target_name)
-        counts[class_name] = {split: len(items) for split, items in splits.items()}
+        counts[class_name] = {split: len(splits.get(split, [])) for split in ("train", "val", "test")}
 
     (out / "classes.txt").write_text("\n".join(classes) + "\n", encoding="utf-8")
     print(f"classes={classes}")
@@ -521,6 +567,25 @@ if ($TrainExitCode -ne 0) { Write-Host "TRAIN_PROCESS_EXIT_CODE=$TrainExitCode" 
 $BestPt = Join-Path $JobDir "$ProjectName\weights\best.pt"
 if (!(Test-Path $BestPt)) { throw "best.pt not found: $BestPt" }
 
+$HasTest = if ($TrainTask -eq "detect") {
+    [bool](Select-String -Path $DataYaml -Pattern '^test\s*:' -Quiet)
+} else {
+    Test-Path -LiteralPath (Join-Path $JobDir "test") -PathType Container
+}
+if ($HasTest) {
+    Write-Host "TEST_EVALUATION=running"
+    $TestArgv = @(
+        $TrainTask, "val", "model=$BestPt", $DataArg, "split=test", "imgsz=$ImgSize",
+        "batch=$Batch", "workers=$Workers", "device=$TrainDevice",
+        "project=$ResultDir", "name=test-evaluation", "plots=True"
+    )
+    Invoke-Argv $YoloCmd $TestArgv
+    if ($LASTEXITCODE -ne 0) { throw "Test evaluation failed with exit code $LASTEXITCODE" }
+    Write-Host "TEST_EVALUATION=$(Join-Path $ResultDir 'test-evaluation')"
+} else {
+    Write-Host "TEST_EVALUATION=skipped (dataset has no test split)"
+}
+
 $ExportOpset = if ($OperatorMode -eq "maixcam") { 11 } else { 17 }
 Invoke-Argv $YoloCmd @("export", "model=$BestPt", "format=onnx", "imgsz=$ImgSize", "simplify=True", "opset=$ExportOpset", "dynamic=False")
 $BestOnnx = Join-Path $JobDir "$ProjectName\weights\best.onnx"
@@ -608,6 +673,39 @@ def ensure_python_modules(py_cmd, modules: dict[str, str]) -> None:
         run(py_cmd + ["-m", "pip", "install"] + missing)
 
 
+def dataset_has_test_split(train_task: str, dataset_path: Path) -> bool:
+    if train_task == "classify":
+        test_dir = Path(dataset_path) / "test"
+        return test_dir.is_dir() and any(path.is_file() for path in test_dir.rglob("*"))
+    data = yaml.safe_load(Path(dataset_path).read_text(encoding="utf-8-sig")) or {}
+    return isinstance(data, dict) and bool(data.get("test"))
+
+
+def evaluate_test_split(args, dataset_path: Path, best_pt: Path, work: Path) -> Path | None:
+    if not dataset_has_test_split(args.train_task, dataset_path):
+        print("TEST_EVALUATION=skipped (dataset has no test split)", flush=True)
+        return None
+    yolo_cmd = build_env_cmd(args.conda_env, "yolo")
+    evaluation_dir = work / "test-evaluation"
+    test_args = [
+        args.train_task, "val",
+        f"model={best_pt}",
+        f"data={dataset_path}",
+        "split=test",
+        f"imgsz={train_imgsz_arg(args)}",
+        f"batch={args.batch}",
+        f"workers={args.workers}",
+        f"device={args.train_device}",
+        f"project={work}",
+        "name=test-evaluation",
+        "plots=True",
+    ]
+    print("TEST_EVALUATION=running", flush=True)
+    run(yolo_cmd + test_args)
+    print(f"TEST_EVALUATION={evaluation_dir}", flush=True)
+    return evaluation_dir
+
+
 
 def train_local(args, dataset_path: Path, work: Path):
     py_cmd = build_env_cmd(args.conda_env, "python")
@@ -661,6 +759,8 @@ def train_local(args, dataset_path: Path, work: Path):
         raise subprocess.CalledProcessError(train_code, py_cmd + [train_runner, args.train_task, "train"])
     if not best_pt.exists():
         raise SystemExit(f"best.pt not found: {best_pt}")
+
+    evaluate_test_split(args, dataset_path, best_pt, work)
 
     export_opset = 11 if args.operator_mode == "maixcam" else 17
     export_size = imgsz_arg(args) if args.train_task == "detect" else max(args.img_width, args.img_height)
@@ -821,6 +921,11 @@ def write_training_manifest(
             "lr0": args.lr0,
             "device": args.train_device,
             "mode": args.train_mode,
+            "split_percent": "preserved" if getattr(args, "dataset_yaml", "") else {
+                "train": getattr(args, "train_ratio_percent", 80.0),
+                "val": getattr(args, "val_ratio_percent", 10.0),
+                "test": 100.0 - getattr(args, "train_ratio_percent", 80.0) - getattr(args, "val_ratio_percent", 10.0),
+            },
         },
         "metrics": read_training_metrics(results_csv),
         "artifacts": {
@@ -830,6 +935,7 @@ def write_training_manifest(
             "results_csv": "training-metrics.csv" if results_csv.is_file() else "",
             "args_yaml": "training-arguments.yaml" if (out / "training-arguments.yaml").is_file() else "",
             "plots": "plots",
+            "test_evaluation": "test-evaluation" if (out / "test-evaluation").is_dir() else "",
         },
     }
     manifest_path = out / "training-manifest.json"
@@ -866,6 +972,7 @@ def run_train_stage(args, script_root: Path):
             images_dir,
             yolo_data,
             train_ratio_percent=args.train_ratio_percent,
+            val_ratio_percent=args.val_ratio_percent,
         )
         train_images = sorted(
             path for path in (yolo_data / "train").rglob("*")
@@ -878,6 +985,7 @@ def run_train_stage(args, script_root: Path):
             annotations_dir,
             yolo_data,
             train_ratio_percent=args.train_ratio_percent,
+            val_ratio_percent=args.val_ratio_percent,
             img_width=args.img_width,
             img_height=args.img_height,
             resize_mode=args.image_resize_mode,
@@ -909,6 +1017,10 @@ def run_train_stage(args, script_root: Path):
         for artifact in run_dir.glob(pattern):
             if artifact.is_file():
                 shutil.copy2(artifact, plot_dir / artifact.name)
+
+    test_evaluation_source = work / "test-evaluation" if args.train_mode != "remote-windows" else best_pt.parent / "test-evaluation"
+    if test_evaluation_source.is_dir():
+        shutil.copytree(test_evaluation_source, out / "test-evaluation", dirs_exist_ok=True)
 
     calib_dir = out / "calibration-images"
     calib_dir.mkdir(parents=True, exist_ok=True)
@@ -1064,7 +1176,8 @@ def build_parser(script_root: Path):
     ap.add_argument("--train-task", choices=["detect", "classify"], default="detect", help="训练任务：检测或图像分类")
     ap.add_argument("--annotations-dir", default="")
     ap.add_argument("--dataset-yaml", default="", help="已划分的 YOLO 检测数据集 data.yaml；使用时保留原 train/val/test")
-    ap.add_argument("--train-ratio-percent", type=float, default=80.0, help="训练集占比，1 到 100；验证集占比自动为 100 减该值")
+    ap.add_argument("--train-ratio-percent", type=float, default=80.0, help="训练集占比，默认 80")
+    ap.add_argument("--val-ratio-percent", type=float, default=10.0, help="验证集占比，默认 10；测试集为 100 减训练集和验证集")
 
 
     ap.add_argument("--img-size", type=int, default=None, help="兼容旧调用：同时设置图片宽度和高度")

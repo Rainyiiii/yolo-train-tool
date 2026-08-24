@@ -144,6 +144,7 @@ def _run_from_manifest(manifest_path: Path, data: dict[str, Any]) -> dict[str, A
             _artifact("onnx", artifacts_raw.get("onnx"), manifest_path.parent),
             _artifact("classes", artifacts_raw.get("classes"), manifest_path.parent),
             _artifact("results", artifacts_raw.get("results_csv"), manifest_path.parent),
+            _artifact("test_evaluation", artifacts_raw.get("test_evaluation"), manifest_path.parent),
         ) if item is not None
     ]
     configured_output = Path(str(data.get("output_dir") or manifest_path.parent)).expanduser()

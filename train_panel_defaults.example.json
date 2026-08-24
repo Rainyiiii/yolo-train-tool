@@ -5,6 +5,7 @@
   "train_annotations_dir": "",
   "prepared_dataset_yaml": "",
   "train_ratio_percent": "80",
+  "val_ratio_percent": "10",
   "img_width": "640",
   "img_height": "480",
   "image_resize_mode": "letterbox",

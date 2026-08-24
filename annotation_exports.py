@@ -37,7 +37,7 @@ def _item_name(item: dict[str, Any]) -> str:
 
 def _split_name(item: dict[str, Any]) -> str:
     value = int(hashlib.sha256(item["relative_source"].encode("utf-8", errors="replace")).hexdigest()[:8], 16) % 100
-    return "train" if value < 80 else "val" if value < 95 else "test"
+    return "train" if value < 80 else "val" if value < 90 else "test"
 
 
 def _write_text(archive: zipfile.ZipFile, name: str, value: str) -> None:
