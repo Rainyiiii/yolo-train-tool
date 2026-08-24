@@ -12,12 +12,12 @@ YOLO团队训练平台是一个面向 Windows、Ubuntu 和多种边缘部署平�
 
 ## 队友第一次使用
 
-1. 双击 `YOLO-Team-Training-Platform-Setup-v3.2.8-beta.exe`。
+1. 双击 `YOLO-Team-Training-Platform-Setup-v3.2.9-beta.exe`。
 2. 保持默认安装目录 `D:\YOLOTeamTrainingPlatform`，点击安装。
 3. 安装器自动准备 .NET、WebView2、Python、PyTorch、ONNX Runtime 和平台依赖。
 4. 安装完成后从桌面打开“YOLO团队训练平台”。
-5. 点击“导入下载的数据集”，选择包含 `data.yaml` 的最外层目录；也可继续手动选择图片与 XML。
-6. 选择 `640×480 推荐`，点击“检查并开始训练”。
+5. 打开“工作台总览”，平台会根据当前项目状态提示下一步。
+6. 导入包含 `data.yaml` 的数据集，选择基础模型与训练配置，再点击“检查并开始训练”。
 
 平台新建数据集时默认按照训练 80% / 验证 10% / 测试 10% 划分。训练集用于学习，验证集用于选择最佳模型，测试集只在训练完成后对 `best.pt` 做独立评估；导入已有 YOLO 数据集时保留其原始 `train / valid / test`。
 
@@ -62,7 +62,7 @@ Ubuntu 上访问：<http://127.0.0.1:8989/>。如果要从其他电脑访问，�
 维护者运行 `installer/windows/build-installer.ps1`，程序会在 `dist` 文件夹生成：
 
 ```text
-YOLO-Team-Training-Platform-Setup-v3.2.8-beta.exe
+YOLO-Team-Training-Platform-Setup-v3.2.9-beta.exe
 ```
 
 安装器不会打包本机 Workspace、私人路径、训练数据、日志和训练结果。
@@ -100,6 +100,8 @@ WebView2 只是桌面承载层，不复制训练逻辑；桌面应用与浏览�
 历史工程的准确来源与授权目前无法确认，因此仓库不提供猜测性来源链接，也不宣称未知部分为原创。当前采用保留权利的 [LICENSE](LICENSE)，详细边界与第三方组件见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。发布前仍需确认仓库不包含个人数据、训练图片、私有路径、日志或模型权重。
 
 ## 推荐操作流程
+
+登录后的“工作台总览”将项目、数据、训练、验证和部署串成五个阶段，并根据当前项目、数据健康度和模型资产给出下一步。常用训练参数直接显示；Python/CUDA 环境、远程训练、厂商旧工具链和自动跟踪标注采用渐进式显示。按 `Ctrl+K` 可以快速跳转到任意功能。
 
 ### 1. 准备数据
 
