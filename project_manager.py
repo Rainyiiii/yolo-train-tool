@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
+import shutil
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -128,6 +130,11 @@ def update_project(project_id: str, values: dict[str, Any], path: Path = PROJECT
         if not name:
             raise ValueError("项目名称不能为空。")
         project["name"] = name
+    if "task" in values:
+        task = str(values.get("task") or "").strip()
+        if task not in {"detect", "classify"}:
+            raise ValueError("当前项目任务仅支持目标检测或图像分类。")
+        project["task"] = task
     if "dataset_root" in values:
         raw_root = str(values.get("dataset_root") or "").strip()
         project["dataset_root"] = str(Path(raw_root).expanduser().resolve()) if raw_root else project["root"]
@@ -139,6 +146,61 @@ def update_project(project_id: str, values: dict[str, Any], path: Path = PROJECT
     project["updated_at"] = _now()
     save_projects(registry, path)
     return project
+
+
+def duplicate_project(project_id: str, path: Path = PROJECTS_FILE) -> dict[str, Any]:
+    """Copy project configuration into a new, empty managed project."""
+    registry = load_projects(path)
+    source = next((item for item in registry["projects"] if item.get("id") == project_id), None)
+    if source is None:
+        raise ValueError("项目不存在。")
+    return create_project(
+        f"{source.get('name') or project_id} 副本",
+        task=str(source.get("task") or "detect"),
+        labels=list(source.get("labels") or []),
+        path=path,
+    )
+
+
+def delete_project(
+    project_id: str,
+    delete_managed_data: bool = False,
+    path: Path = PROJECTS_FILE,
+) -> dict[str, Any]:
+    """Remove a project record and optionally its platform-managed dataset directory.
+
+    External dataset roots, training runs, models, and exports are intentionally never
+    deleted here. The only removable directory is the project's own generated root
+    beneath DATASETS_DIR.
+    """
+    registry = load_projects(path)
+    project = next((item for item in registry["projects"] if item.get("id") == project_id), None)
+    if project is None:
+        raise ValueError("项目不存在。")
+
+    deleted_data = False
+    if delete_managed_data:
+        managed_root = Path(os.path.abspath(Path(str(project.get("root") or "")).expanduser()))
+        datasets_root = Path(os.path.abspath(DATASETS_DIR))
+        expected_root = Path(os.path.abspath(datasets_root / str(project.get("id") or "")))
+        if expected_root.parent != datasets_root or managed_root != expected_root:
+            raise ValueError("项目数据目录不符合平台托管规则，已拒绝删除。")
+        if managed_root.is_symlink():
+            raise ValueError("项目数据目录是符号链接，已拒绝自动删除。")
+        if managed_root.exists():
+            shutil.rmtree(managed_root)
+            deleted_data = True
+
+    remaining = [item for item in registry["projects"] if item.get("id") != project_id]
+    registry["projects"] = remaining
+    if registry.get("active_project_id") == project_id:
+        registry["active_project_id"] = str(remaining[0].get("id") or "") if remaining else ""
+    save_projects(registry, path)
+    return {
+        "project": project,
+        "active_project_id": registry["active_project_id"],
+        "deleted_managed_data": deleted_data,
+    }
 
 
 def _find_files(root: Path, extensions: set[str]) -> list[Path]:

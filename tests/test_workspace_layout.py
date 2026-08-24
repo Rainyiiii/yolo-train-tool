@@ -60,6 +60,17 @@ class WorkspaceLayoutTests(unittest.TestCase):
         self.assertNotIn('<div class="field advanced-setting"><label>训练设备</label>', HTML_PAGE)
         self.assertIn('class="actions train-primary-bar"', HTML_PAGE)
 
+    def test_project_center_supports_the_full_project_lifecycle(self) -> None:
+        self.assertIn('id="project-search"', HTML_PAGE)
+        self.assertIn('id="project-health-filter"', HTML_PAGE)
+        self.assertIn('class="btn compact edit-project"', HTML_PAGE)
+        self.assertIn('class="btn compact duplicate-project"', HTML_PAGE)
+        self.assertIn('class="btn compact red delete-project"', HTML_PAGE)
+        self.assertIn('id="project-delete-modal"', HTML_PAGE)
+        self.assertIn('id="delete-managed-data"', HTML_PAGE)
+        self.assertIn("function updateDeleteProjectGuard()", HTML_PAGE)
+        self.assertIn("/api/projects/delete", HTML_PAGE)
+
     def test_mobile_falls_back_to_document_scrolling(self) -> None:
         self.assertIn("html,body{height:auto;overflow:auto}", HTML_PAGE)
         self.assertIn(".layout,body.sidebar-collapsed .layout{height:auto;grid-template-columns:1fr", HTML_PAGE)

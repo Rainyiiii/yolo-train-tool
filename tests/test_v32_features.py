@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from io import BytesIO
@@ -10,7 +11,7 @@ from PIL import Image
 
 from annotation_store import AnnotationStore
 from model_assets import collect_model_assets, register_external_model
-from project_manager import activate_project, create_project, inspect_dataset, project_catalog, update_project
+from project_manager import activate_project, create_project, delete_project, duplicate_project, inspect_dataset, project_catalog, update_project
 
 
 def image_bytes(color: str = "red") -> bytes:
@@ -48,6 +49,44 @@ class Version32FeaturesTest(unittest.TestCase):
         self.assertEqual(health["box_count"], 1)
         self.assertEqual(health["missing_labels"], 1)
         self.assertEqual(health["health"], "warning")
+
+    def test_project_lifecycle_keeps_external_data_and_can_remove_managed_data(self) -> None:
+        registry = self.root / "config" / "projects.json"
+        managed = self.root / "managed"
+        external = self.root / "external-dataset"
+        external.mkdir()
+        (external / "keep.txt").write_text("user data", encoding="utf-8")
+        with patch("project_manager.DATASETS_DIR", managed):
+            external_project = create_project("外部数据", dataset_root=external, path=registry)
+            managed_project = duplicate_project(external_project["id"], path=registry)
+            self.assertNotEqual(managed_project["id"], external_project["id"])
+            self.assertEqual(managed_project["labels"], external_project["labels"])
+            managed_root = Path(managed_project["root"])
+            (managed_root / "images" / "sample.txt").write_text("managed", encoding="utf-8")
+
+            removed_external = delete_project(external_project["id"], path=registry)
+            self.assertFalse(removed_external["deleted_managed_data"])
+            self.assertTrue((external / "keep.txt").is_file())
+
+            removed_managed = delete_project(managed_project["id"], delete_managed_data=True, path=registry)
+            self.assertTrue(removed_managed["deleted_managed_data"])
+            self.assertFalse(managed_root.exists())
+            self.assertEqual(project_catalog(registry)["summary"]["project_count"], 0)
+
+    def test_project_delete_rejects_a_tampered_managed_root(self) -> None:
+        registry = self.root / "config" / "projects.json"
+        managed = self.root / "managed"
+        outside = self.root / "outside"
+        outside.mkdir()
+        (outside / "keep.txt").write_text("do not delete", encoding="utf-8")
+        with patch("project_manager.DATASETS_DIR", managed):
+            project = create_project("安全边界", path=registry)
+            payload = json.loads(registry.read_text(encoding="utf-8"))
+            payload["projects"][0]["root"] = str(outside)
+            registry.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "托管规则"):
+                delete_project(project["id"], delete_managed_data=True, path=registry)
+        self.assertTrue((outside / "keep.txt").is_file())
 
     def test_existing_model_can_be_registered_and_grouped(self) -> None:
         registry = self.root / "model-registry.json"
