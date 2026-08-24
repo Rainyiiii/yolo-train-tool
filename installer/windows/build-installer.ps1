@@ -63,7 +63,7 @@ foreach ($path in @($AppStage, $DesktopStage, $ResourceStage, $OutputDirectory, 
 
 $runtimeFiles = @(
     "annotation_exports.py", "annotation_server.py", "annotation_service.py", "annotation_store.py", "annotation_ui.py",
-    "device_profiles.py", "export_model.py", "host_train_export.py", "install_runtime.ps1", "model_assets.py",
+    "base_models.py", "device_profiles.py", "export_model.py", "host_train_export.py", "install_runtime.ps1", "model_assets.py",
     "model_test.py", "panel_service.py", "platform_paths.py", "remote_train_env.py", "requirements.txt",
     "system_check.py", "train_panel.py", "train_panel_defaults.example.json", "ultralytics_train_runner.py",
     "video_track_label.py", "vm_convert_pack.sh", "project_manager.py", "VERSION.txt", "README.md", "SECURITY.md",
