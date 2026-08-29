@@ -48,9 +48,18 @@ class WorkspaceLayoutTests(unittest.TestCase):
     def test_overview_exposes_on_demand_system_diagnostics(self) -> None:
         self.assertIn('id="diagnostics-title"', HTML_PAGE)
         self.assertIn('id="diagnostics-detail"', HTML_PAGE)
+        self.assertIn('id="diagnostics-copy"', HTML_PAGE)
         self.assertIn("function loadSystemDiagnostics", HTML_PAGE)
+        self.assertIn("function copySystemDiagnostics", HTML_PAGE)
         self.assertIn("/api/system-check", HTML_PAGE)
         self.assertIn("ONNX Runtime", HTML_PAGE)
+
+    def test_training_page_keeps_readiness_visible_and_fresh(self) -> None:
+        self.assertIn('id="train-readiness-summary"', HTML_PAGE)
+        self.assertIn('id="train-readiness-items"', HTML_PAGE)
+        self.assertIn('id="train-check-button"', HTML_PAGE)
+        self.assertIn("function scheduleTrainReadiness", HTML_PAGE)
+        self.assertIn("if(name==='train')scheduleTrainReadiness(80)", HTML_PAGE)
 
     def test_low_frequency_features_use_progressive_disclosure(self) -> None:
         self.assertIn('class="experimental-nav"', HTML_PAGE)

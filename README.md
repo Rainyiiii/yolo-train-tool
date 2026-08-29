@@ -12,7 +12,7 @@ YOLO团队训练平台是一个面向 Windows、Ubuntu 和多种边缘部署平�
 
 ## 队友第一次使用
 
-1. 双击 `YOLO-Team-Training-Platform-Setup-v3.2.11-beta.exe`。
+1. 双击 `YOLO-Team-Training-Platform-Setup-v3.2.12-beta.exe`。
 2. 保持默认安装目录 `D:\YOLOTeamTrainingPlatform`，点击安装。
 3. 安装器自动准备 .NET、WebView2、Python、PyTorch、ONNX Runtime 和平台依赖。
 4. 安装完成后从桌面打开“YOLO团队训练平台”。
@@ -62,7 +62,7 @@ Ubuntu 上访问：<http://127.0.0.1:8989/>。如果要从其他电脑访问，�
 维护者运行 `installer/windows/build-installer.ps1`，程序会在 `dist` 文件夹生成：
 
 ```text
-YOLO-Team-Training-Platform-Setup-v3.2.11-beta.exe
+YOLO-Team-Training-Platform-Setup-v3.2.12-beta.exe
 ```
 
 安装器不会打包本机 Workspace、私人路径、训练数据、日志和训练结果。
@@ -101,11 +101,11 @@ WebView2 只是桌面承载层，不复制训练逻辑；桌面应用与浏览�
 
 ## 推荐操作流程
 
-登录后的“工作台总览”将项目、数据、训练、验证和部署串成五个阶段，并根据当前项目、数据健康度和模型资产给出下一步。点击“运行系统诊断”可直接检查 Python、PyTorch/CUDA、Ultralytics、OpenCV Contrib、ONNX Runtime 和导出组件的安装包与版本范围。常用训练参数直接显示；远程训练、厂商旧工具链和自动跟踪标注采用渐进式显示。按 `Ctrl+K` 可以快速跳转到任意功能。
+登录后的“工作台总览”将项目、数据、训练、验证和部署串成五个阶段，并根据当前项目、数据健康度和模型资产给出下一步。点击“运行系统诊断”可直接检查 Python、PyTorch/CUDA、Ultralytics、OpenCV Contrib、ONNX Runtime 和导出组件的安装包与版本范围，并一键复制完整诊断报告。进入训练页会自动运行训练前就绪检查，关键参数变化后也会重新检查并列出阻塞项。常用训练参数直接显示；远程训练、厂商旧工具链和自动跟踪标注采用渐进式显示。按 `Ctrl+K` 可以快速跳转到任意功能。
 
 ### 1. 准备数据
 
-不再强制依赖 Roboflow。“项目中心”的目标检测项目会自动同步到个人/团队标注中心；选择类别、拖动画框，再点击“完成并下一张”即可。团队成员可以直接从公共队列自动领取下一张，不必预先分配；审核默认关闭，需要双人复核时再按项目开启。管理员可以删除协作标注副本，操作不会连带删除训练平台数据集或已导出压缩包。已完成数据可导出 Ultralytics YOLO、COCO、VOC 或 LabelMe。详见[协作标注文档](docs/COLLABORATIVE_ANNOTATION.md)。
+不再强制依赖 Roboflow。“项目中心”的目标检测项目会自动同步到个人/团队标注中心；选择类别、拖动画框，再点击“完成并下一张”即可。团队成员可以直接从公共队列自动领取下一张，不必预先分配；审核默认关闭，需要双人复核时再按项目开启。“项目与团队”默认只展示当前项目和高频流程，成员、任务、导出及危险操作按需展开。管理员可以通过完整名称确认删除协作标注副本，操作不会连带删除训练平台数据集或已导出压缩包。已完成数据可导出 Ultralytics YOLO、COCO、VOC 或 LabelMe。详见[协作标注文档](docs/COLLABORATIVE_ANNOTATION.md)。
 
 推荐直接使用 Roboflow/YOLO 导出的标准目录：
 
@@ -186,7 +186,7 @@ dataset/
 - Python：支持 3.10–3.14；电脑没有 Python 时安装器会尝试通过 winget 安装 Python 3.14。
 - 依赖包含 `onnxruntime`，用于 ONNX 模型验证；厂商转换工具链建议使用独立环境或容器。
 
-工作台总览可按需运行系统诊断；安装器生成的完整自检报告保存在 `workspace/logs/system-check.json`。诊断不仅检查模块是否存在，也会拒绝版本不兼容或误装为非 Contrib 版的 OpenCV。
+工作台总览可按需运行系统诊断，并可将当前组件、版本、GPU/CUDA 与具体错误一键复制为问题报告；安装器生成的完整自检报告保存在 `workspace/logs/system-check.json`。诊断不仅检查模块是否存在，也会拒绝版本不兼容或误装为非 Contrib 版的 OpenCV。
 
 ## 常见问题
 

@@ -99,9 +99,18 @@ class AnnotationWorkflowTest(unittest.TestCase):
 
     def test_ui_exposes_guarded_project_deletion(self) -> None:
         self.assertIn('id="deleteProjectSection"', ANNOTATION_HTML)
-        self.assertIn("function deleteCurrentProject", ANNOTATION_HTML)
+        self.assertIn('id="annotationProjectDeleteModal"', ANNOTATION_HTML)
+        self.assertIn("function openDeleteProjectDialog", ANNOTATION_HTML)
+        self.assertIn("function updateDeleteProjectGuard", ANNOTATION_HTML)
+        self.assertIn("function confirmDeleteCurrentProject", ANNOTATION_HTML)
         self.assertIn("'/api/projects/delete'", ANNOTATION_HTML)
-        self.assertIn("请输入项目名称确认删除", ANNOTATION_HTML)
+        self.assertIn("输入完整项目名称确认", ANNOTATION_HTML)
+
+    def test_project_manager_uses_progressive_disclosure(self) -> None:
+        self.assertIn('id="managerContext"', ANNOTATION_HTML)
+        self.assertGreaterEqual(ANNOTATION_HTML.count('class="manager-section"'), 4)
+        self.assertIn("团队成员与任务", ANNOTATION_HTML)
+        self.assertIn("项目包与数据集导出", ANNOTATION_HTML)
 
 
 if __name__ == "__main__":
