@@ -7,6 +7,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SETUP_SCRIPT = ROOT / "installer" / "windows" / "setup.iss"
 RUNTIME_SCRIPT = ROOT / "install_runtime.ps1"
+POWERSHELL_ENTRY_SCRIPTS = (
+    ROOT / "install_and_start.ps1",
+    RUNTIME_SCRIPT,
+    ROOT / "installer" / "windows" / "build-installer.ps1",
+)
 
 
 class WindowsInstallerUninstallPolicyTest(unittest.TestCase):
@@ -53,6 +58,18 @@ class WindowsInstallerUninstallPolicyTest(unittest.TestCase):
         self.assertIn("RuntimeArguments := RuntimeArguments + ' -RepairRuntime'", self.script)
         self.assertIn("[switch]$RepairRuntime", self.runtime_script)
         self.assertIn("Remove-RuntimeForRepair", self.runtime_script)
+
+    def test_windows_powershell_51_entry_scripts_use_utf8_bom(self) -> None:
+        for script in POWERSHELL_ENTRY_SCRIPTS:
+            with self.subTest(script=script.name):
+                self.assertTrue(
+                    script.read_bytes().startswith(b"\xef\xbb\xbf"),
+                    f"{script.name} must keep a UTF-8 BOM for Windows PowerShell 5.1",
+                )
+
+    def test_installer_embeds_numeric_file_and_product_versions(self) -> None:
+        self.assertIn("VersionInfoVersion={#ProductVersionNumeric}", self.script)
+        self.assertIn("VersionInfoProductVersion={#ProductVersionNumeric}", self.script)
 
 
 if __name__ == "__main__":

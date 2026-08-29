@@ -108,7 +108,7 @@ Windows 使用：
 
 ### 查看诊断报告
 
-安装器会生成 `Workspace/logs/system-check.json`。面板启动失败时，重点查看：
+工作台总览可直接点击“运行系统诊断”，检查 Python、PyTorch/CUDA、Ultralytics、OpenCV Contrib、ONNX Runtime 与导出组件。诊断同时核对安装包名称和版本范围，避免“模块能导入但版本或发行包不符合要求”的假正常。安装器也会生成 `Workspace/logs/system-check.json`。面板启动失败时，重点查看：
 
 - `Workspace/logs/installation.log` 或 `workspace/logs/installation-ubuntu.log`
 - `Workspace/logs/launcher.log`

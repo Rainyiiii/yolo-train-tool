@@ -70,6 +70,7 @@ def discover_lan_addresses() -> list[str]:
 
 class AnnotationHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
+    allow_reuse_address = False
 
     def __init__(self, address: tuple[str, int], store: AnnotationStore, shared: bool):
         super().__init__(address, AnnotationHandler)
@@ -342,6 +343,10 @@ class AnnotationHandler(BaseHTTPRequestHandler):
                     bool(body.get("enabled")),
                 )
                 self.send_json({"project": project})
+                return
+            if self.path == "/api/projects/delete":
+                result = self.server.store.delete_project(user, int(body.get("project_id", 0)))
+                self.send_json({"ok": True, "deleted": result})
                 return
             if self.path == "/api/projects/import-images":
                 count = self.server.store.import_images(user, int(body.get("project_id", 0)), body.get("source_dir", ""))

@@ -7,3 +7,4 @@ onnxslim>=0.1.71,<1
 onnxruntime>=1.18,<2
 PyYAML>=6,<7
 psutil>=6,<8
+packaging>=24,<27

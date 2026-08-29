@@ -1,4 +1,4 @@
-param([string]$Configuration = "Release")
+﻿param([string]$Configuration = "Release")
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"

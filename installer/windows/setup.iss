@@ -21,6 +21,7 @@ ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayName={#ProductName}
 VersionInfoDescription={#ProductName} 安装程序
 VersionInfoProductName={#ProductName}
+VersionInfoVersion={#ProductVersionNumeric}
 VersionInfoProductVersion={#ProductVersionNumeric}
 SetupLogging=yes
 CloseApplications=yes

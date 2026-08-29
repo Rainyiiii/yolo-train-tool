@@ -14,6 +14,7 @@
 - ONNX、ONNX Runtime、onnxsim、onnxslim
 - PyYAML
 - psutil
+- packaging（PyPA）
 - PyTorch（由运行环境安装器按 CPU/GPU 选择）
 - Microsoft Edge WebView2 SDK 与 Evergreen Runtime
 - Microsoft .NET 8 Desktop Runtime

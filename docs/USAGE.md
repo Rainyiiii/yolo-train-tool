@@ -16,7 +16,7 @@ cd yolo-train-tool
 普通队友直接双击发布页中的安装器：
 
 ```text
-YOLO-Team-Training-Platform-Setup-v3.2.10-beta.exe
+YOLO-Team-Training-Platform-Setup-v3.2.11-beta.exe
 ```
 
 安装器会自动：
@@ -181,7 +181,7 @@ Workspace/logs/annotation-server.log
 Workspace/logs/system-check.json
 ```
 
-如果面板无法启动，先运行系统自检，再确认 8989 端口没有被其他服务占用。
+工作台总览中的“运行系统诊断”会检查组件是否缺失、版本是否符合 `requirements.txt`，以及 OpenCV 是否为标注跟踪所需的 Contrib 版本。如果面板无法启动，再查看安装器生成的报告并确认 8989 端口没有被其他服务占用。
 
 ## 12. 分享给其他人
 

@@ -6,7 +6,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from annotation_store import AnnotationStore
+from annotation_store import AnnotationError, AnnotationStore
 from annotation_ui import ANNOTATION_HTML
 
 
@@ -79,6 +79,29 @@ class AnnotationWorkflowTest(unittest.TestCase):
         self.assertIn("完成并下一张", ANNOTATION_HTML)
         self.assertIn("同步项目中心", ANNOTATION_HTML)
         self.assertNotIn(">提交审核</button>", ANNOTATION_HTML)
+
+    def test_admin_can_delete_only_the_managed_annotation_copy(self) -> None:
+        dataset = self._dataset()
+        project = self.store.create_project(self.admin, "待删除", ["object"], dataset)
+        project_dir = self.store.projects_dir / str(project["id"])
+        self.assertTrue(project_dir.is_dir())
+
+        annotator = self.store.create_user("student", "password123", "annotator", self.admin)
+        with self.assertRaises(AnnotationError) as caught:
+            self.store.delete_project(annotator, project["id"])
+        self.assertEqual(caught.exception.status, 403)
+
+        deleted = self.store.delete_project(self.admin, project["id"])
+        self.assertEqual(deleted["name"], "待删除")
+        self.assertFalse(project_dir.exists())
+        self.assertTrue(dataset.is_dir())
+        self.assertEqual(self.store.list_projects(self.admin), [])
+
+    def test_ui_exposes_guarded_project_deletion(self) -> None:
+        self.assertIn('id="deleteProjectSection"', ANNOTATION_HTML)
+        self.assertIn("function deleteCurrentProject", ANNOTATION_HTML)
+        self.assertIn("'/api/projects/delete'", ANNOTATION_HTML)
+        self.assertIn("请输入项目名称确认删除", ANNOTATION_HTML)
 
 
 if __name__ == "__main__":

@@ -45,6 +45,13 @@ class WorkspaceLayoutTests(unittest.TestCase):
         for page in ("projects", "dataset", "train", "test", "convert"):
             self.assertIn(f'data-page="{page}"', HTML_PAGE)
 
+    def test_overview_exposes_on_demand_system_diagnostics(self) -> None:
+        self.assertIn('id="diagnostics-title"', HTML_PAGE)
+        self.assertIn('id="diagnostics-detail"', HTML_PAGE)
+        self.assertIn("function loadSystemDiagnostics", HTML_PAGE)
+        self.assertIn("/api/system-check", HTML_PAGE)
+        self.assertIn("ONNX Runtime", HTML_PAGE)
+
     def test_low_frequency_features_use_progressive_disclosure(self) -> None:
         self.assertIn('class="experimental-nav"', HTML_PAGE)
         self.assertIn("body.show-experimental .nav button.experimental-nav", HTML_PAGE)

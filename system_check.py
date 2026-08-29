@@ -6,7 +6,11 @@ import json
 import platform
 import subprocess
 import sys
+from importlib.metadata import PackageNotFoundError, version as package_version
 from pathlib import Path
+
+from packaging.specifiers import SpecifierSet
+from packaging.version import InvalidVersion, Version
 
 from platform_paths import LOG_DIR, PRODUCT_NAME
 
@@ -14,12 +18,51 @@ ROOT = Path(__file__).resolve().parent
 REPORT_PATH = LOG_DIR / "system-check.json"
 
 
-def module_status(name: str) -> dict[str, object]:
+def configure_stdio() -> None:
+    for name in ("stdout", "stderr"):
+        stream = getattr(sys, name, None)
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
+
+configure_stdio()
+
+
+def module_status(name: str, *, distribution: str = "", requirement: str = "") -> dict[str, object]:
     try:
-        module = importlib.import_module(name)
-        return {"ok": True, "version": getattr(module, "__version__", "installed")}
+        available = importlib.util.find_spec(name) is not None
     except Exception as exc:
-        return {"ok": False, "error": str(exc)}
+        return {"ok": False, "reason": "missing", "error": str(exc)}
+    if not available:
+        return {"ok": False, "reason": "missing", "error": f"找不到 Python 模块 {name}。"}
+    detected = "installed"
+    if distribution:
+        try:
+            detected = package_version(distribution)
+        except PackageNotFoundError:
+            return {
+                "ok": False,
+                "reason": "wrong-package",
+                "version": detected,
+                "error": f"需要安装 {distribution}{requirement}。",
+            }
+    if requirement:
+        try:
+            compatible = Version(detected) in SpecifierSet(requirement)
+        except InvalidVersion:
+            compatible = False
+        if not compatible:
+            return {
+                "ok": False,
+                "reason": "incompatible",
+                "version": detected,
+                "error": f"当前版本 {detected}，要求 {requirement}。",
+            }
+    return {"ok": True, "version": detected, "requirement": requirement}
 
 
 def nvidia_name() -> str:
@@ -40,16 +83,17 @@ def nvidia_name() -> str:
 
 def build_report() -> dict[str, object]:
     modules = {
-        "torch": module_status("torch"),
-        "ultralytics": module_status("ultralytics"),
-        "opencv": module_status("cv2"),
-        "Pillow": module_status("PIL"),
-        "onnx": module_status("onnx"),
-        "onnxsim": module_status("onnxsim"),
-        "onnxslim": module_status("onnxslim"),
-        "onnxruntime": module_status("onnxruntime"),
-        "yaml": module_status("yaml"),
-        "psutil": module_status("psutil"),
+        "torch": module_status("torch", distribution="torch"),
+        "ultralytics": module_status("ultralytics", distribution="ultralytics", requirement=">=8.4,<9"),
+        "opencv": module_status("cv2", distribution="opencv-contrib-python", requirement=">=4.10,<5"),
+        "Pillow": module_status("PIL", distribution="Pillow", requirement=">=10,<13"),
+        "onnx": module_status("onnx", distribution="onnx", requirement=">=1.17,<2"),
+        "onnxsim": module_status("onnxsim", distribution="onnxsim", requirement=">=0.4.36,<1"),
+        "onnxslim": module_status("onnxslim", distribution="onnxslim", requirement=">=0.1.71,<1"),
+        "onnxruntime": module_status("onnxruntime", distribution="onnxruntime", requirement=">=1.18,<2"),
+        "yaml": module_status("yaml", distribution="PyYAML", requirement=">=6,<7"),
+        "psutil": module_status("psutil", distribution="psutil", requirement=">=6,<8"),
+        "packaging": module_status("packaging", distribution="packaging", requirement=">=24,<27"),
     }
     cuda_available = False
     cuda_version = ""
@@ -88,7 +132,7 @@ def main() -> int:
     else:
         print("训练设备：CPU（未发现可用的 NVIDIA CUDA 显卡）")
     if report["missing"]:
-        print("缺少组件：" + ", ".join(report["missing"]))
+        print("异常组件：" + ", ".join(report["missing"]))
         return 1
     print("系统自检通过。")
     return 0

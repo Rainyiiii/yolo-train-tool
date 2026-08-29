@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$InstallRoot = "",
     [switch]$NoStart,
     [switch]$RepairRuntime
@@ -24,6 +24,7 @@ $LogFile = Join-Path $LogDir "installation.log"
 $ConfigDir = Join-Path $WorkspaceRoot "config"
 $SettingsFile = Join-Path $ConfigDir "settings.json"
 $Requirements = Join-Path $AppRoot "requirements.txt"
+$SystemCheck = Join-Path $AppRoot "system_check.py"
 $DefaultsExample = Join-Path $AppRoot "train_panel_defaults.example.json"
 $DependencyStateFile = Join-Path $RuntimeRoot ".yolo-dependency-state.json"
 
@@ -82,10 +83,9 @@ function Invoke-Probe([scriptblock]$Action) {
 
 function Test-RuntimeDependencies {
     if (!(Test-Path -LiteralPath $VenvPython)) { return $false }
-    $modulesReady = Invoke-Probe {
-        & $VenvPython -c "import importlib.util,sys; names=('torch','ultralytics','cv2','PIL','onnx','onnxsim','onnxslim','onnxruntime','yaml','psutil'); sys.exit(0 if all(importlib.util.find_spec(name) for name in names) else 1)"
-    }
-    if (!$modulesReady) { return $false }
+    if (!(Test-Path -LiteralPath $SystemCheck)) { return $false }
+    $systemReady = Invoke-Probe { & $VenvPython $SystemCheck }
+    if (!$systemReady) { return $false }
     return Invoke-Probe { & $VenvPython -m pip check }
 }
 

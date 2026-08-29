@@ -434,6 +434,42 @@ class AnnotationStore:
             self._event(connection, project_id, None, actor["id"], "review_mode_changed", {"enabled": bool(enabled)})
         return self.get_project(project_id, actor)
 
+    def delete_project(self, actor: dict[str, Any], project_id: int) -> dict[str, Any]:
+        """Delete one collaboration project and only its managed image copy."""
+        if actor["role"] != "admin":
+            raise AnnotationError("只有管理员可以删除项目。", 403)
+        project = self.get_project(project_id, actor)
+        project_dir = self.projects_dir / str(project_id)
+        expected_parent = self.projects_dir.resolve()
+        if project_dir.is_symlink():
+            raise AnnotationError("项目数据目录异常，已拒绝删除。", 409)
+        if project_dir.exists() and project_dir.resolve().parent != expected_parent:
+            raise AnnotationError("项目数据目录异常，已拒绝删除。", 409)
+
+        staged_dir: Path | None = None
+        if project_dir.exists():
+            trash_dir = self.workspace / ".trash"
+            trash_dir.mkdir(parents=True, exist_ok=True)
+            staged_dir = trash_dir / f"project-{project_id}-{uuid.uuid4().hex}"
+            project_dir.replace(staged_dir)
+        try:
+            with self.connect() as connection:
+                cursor = connection.execute("DELETE FROM projects WHERE id=?", (project_id,))
+                if cursor.rowcount != 1:
+                    raise AnnotationError("项目不存在。", 404)
+        except Exception:
+            if staged_dir and staged_dir.exists() and not project_dir.exists():
+                staged_dir.replace(project_dir)
+            raise
+        if staged_dir and staged_dir.exists():
+            shutil.rmtree(staged_dir)
+        return {
+            "id": project_id,
+            "name": project["name"],
+            "platform_project_id": project.get("platform_project_id") or "",
+            "deleted_managed_copy": True,
+        }
+
     def import_uploaded_image(self, actor: dict[str, Any], project_id: int, filename: str, raw: bytes) -> dict[str, Any]:
         if actor["role"] not in {"admin", "reviewer"}:
             raise AnnotationError("只有管理员或审核员可以上传图片。", 403)
