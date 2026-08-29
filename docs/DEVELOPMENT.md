@@ -15,6 +15,7 @@ yolo-train-tool/
 ├─ host_train_export.py                       数据准备与训练流水线
 ├─ export_model.py                            多设备模型导出
 ├─ rdk_x5_deployment.py                       RDK X5 NPU 转换包与校验入口
+├─ rdk_x5_remote.py                           WSL 编译与 RDK X5 SSH 真机验证
 ├─ model_assets.py                            数据集—训练—模型资产索引
 ├─ platform_paths.py                          产品目录与命名规范
 └─ install_runtime.ps1                        Windows 运行环境安装逻辑

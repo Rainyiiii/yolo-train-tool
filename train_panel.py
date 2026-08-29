@@ -74,6 +74,7 @@ ensure_workspace()
 
 WORKFLOW_SCRIPT = SCRIPT_ROOT / "host_train_export.py"
 EXPORT_SCRIPT = SCRIPT_ROOT / "export_model.py"
+RDK_REMOTE_SCRIPT = SCRIPT_ROOT / "rdk_x5_remote.py"
 TEST_SCRIPT = SCRIPT_ROOT / "model_test.py"
 LABEL_SCRIPT = SCRIPT_ROOT / "video_track_label.py"
 ANNOTATION_SERVICE_SCRIPT = SCRIPT_ROOT / "annotation_service.py"
@@ -149,6 +150,17 @@ DEFAULT_VALUES: dict[str, Any] = {
     "export_data": "",
     "deployment_calibration_dir": "",
     "export_int8": False,
+    "rdk_wsl_distro": "Ubuntu-22.04",
+    "rdk_wsl_venv": "~/.local/share/yolo-team-training-platform/rdk-x5-venv",
+    "rdk_bundle_dir": "",
+    "rdk_bin_path": "",
+    "rdk_board_user": "sunrise",
+    "rdk_board_host": "",
+    "rdk_board_port": "22",
+    "rdk_board_identity_file": "",
+    "rdk_board_remote_dir": "~/yolo-team-training-platform/rdk-x5-deployments",
+    "rdk_board_test_image": "",
+    "rdk_board_result": "",
     "test_model": "",
     "test_source": "camera",
     "test_image_file": "",
@@ -1462,6 +1474,13 @@ def parse_marker(line: str) -> None:
         "TRAIN_MODEL_PT=": "test_model",
         "DEPLOY_ARTIFACT=": "deploy_artifact",
         "DEPLOY_MANIFEST=": "deploy_manifest",
+        "RDK_X5_BIN=": "rdk_bin_path",
+        "RDK_X5_REMOTE_DIR=": "rdk_remote_work_dir",
+        "RDK_X5_RESULT=": "rdk_board_result",
+        "RDK_WSL_TOOLCHAIN=": "rdk_wsl_toolchain",
+        "RDK_WSL_READY=": "rdk_wsl_ready",
+        "RDK_BOARD_READY=": "rdk_board_ready",
+        "RDK_BOARD_VALIDATED=": "rdk_board_validated",
         "TRAIN_STOP_EXPORT_REQUESTED=": "stop_export",
         "TEST_OUTPUT_IMAGE=": "test_output_image",
         "BASE_MODEL=": "base_model",
@@ -1478,6 +1497,8 @@ def parse_marker(line: str) -> None:
                 STATE["markers"][key] = value
                 if key in STATE["values"]:
                     STATE["values"][key] = value
+                if key == "deploy_artifact" and STATE["values"].get("deployment_target") == "drobotics_rdk_x5":
+                    STATE["values"]["rdk_bundle_dir"] = value
                 if key == "test_model" and not STATE["values"].get("model_path"):
                     STATE["values"]["model_path"] = value
                 if key == "test_model":
@@ -1580,6 +1601,40 @@ def build_export_cmd(values: dict[str, Any]) -> list[Any]:
     return cmd
 
 
+def build_rdk_remote_cmd(action: str, values: dict[str, Any]) -> list[Any]:
+    cmd: list[Any] = [sys.executable, str(RDK_REMOTE_SCRIPT)]
+    if action in {"rdk_wsl_check", "rdk_wsl_setup", "rdk_wsl_compile"}:
+        command_name = {
+            "rdk_wsl_check": "wsl-check",
+            "rdk_wsl_setup": "wsl-setup",
+            "rdk_wsl_compile": "wsl-compile",
+        }[action]
+        cmd += [command_name, "--distro", values["rdk_wsl_distro"], "--venv", values["rdk_wsl_venv"]]
+        if action == "rdk_wsl_compile":
+            cmd += ["--bundle", values["rdk_bundle_dir"]]
+        return cmd
+
+    command_name = "board-check" if action == "rdk_board_check" else "board-deploy"
+    cmd += [
+        command_name,
+        "--host", values["rdk_board_host"],
+        "--user", values["rdk_board_user"],
+        "--port", values["rdk_board_port"],
+    ]
+    if values.get("rdk_board_identity_file", "").strip():
+        cmd += ["--identity-file", values["rdk_board_identity_file"]]
+    if action == "rdk_board_deploy":
+        cmd += [
+            "--bundle", values["rdk_bundle_dir"],
+            "--bin", values["rdk_bin_path"],
+            "--remote-root", values["rdk_board_remote_dir"],
+            "--task", values.get("train_task", "detect"),
+        ]
+        if values.get("rdk_board_test_image", "").strip():
+            cmd += ["--test-image", values["rdk_board_test_image"]]
+    return cmd
+
+
 def build_test_cmd(values: dict[str, Any]) -> list[Any]:
     cmd = [
         sys.executable,
@@ -1632,6 +1687,8 @@ def command_for(action: str, values: dict[str, Any]) -> list[Any]:
         return build_convert_cmd(values)
     if action == "export":
         return build_export_cmd(values)
+    if action in {"rdk_wsl_check", "rdk_wsl_setup", "rdk_wsl_compile", "rdk_board_check", "rdk_board_deploy"}:
+        return build_rdk_remote_cmd(action, values)
     if action == "test":
         return build_test_cmd(values)
     if action == "label":
@@ -1745,6 +1802,37 @@ def validate(action: str, values: dict[str, Any]) -> None:
                 raise ValueError("RDK X5 NPU 转换需要选择代表性校准图片目录（建议 20–50 张）。")
         if as_bool(values.get("export_int8")) and not profile.get("vendor_ptq") and not values.get("export_data", "").strip():
             raise ValueError("INT8 导出需要填写 data.yaml 作为代表性校准数据。")
+    elif action in {"rdk_wsl_check", "rdk_wsl_setup", "rdk_wsl_compile", "rdk_board_check", "rdk_board_deploy"}:
+        if not RDK_REMOTE_SCRIPT.is_file():
+            raise ValueError(f"未找到 RDK X5 远程部署组件：{RDK_REMOTE_SCRIPT}")
+        if action.startswith("rdk_wsl") and not values.get("rdk_wsl_distro", "").strip():
+            raise ValueError("请选择 WSL 发行版。")
+        if action == "rdk_wsl_compile":
+            bundle = Path(values.get("rdk_bundle_dir", "").strip()).expanduser()
+            if not bundle.is_dir() or not (bundle / "conversion-plan.json").is_file():
+                raise ValueError("请先生成或选择有效的 RDK X5 转换包。")
+        if action in {"rdk_board_check", "rdk_board_deploy"}:
+            if not values.get("rdk_board_user", "").strip() or not values.get("rdk_board_host", "").strip():
+                raise ValueError("请填写 RDK X5 的 SSH 用户名和主机 IP。")
+            try:
+                port = int(values.get("rdk_board_port", "22"))
+            except (TypeError, ValueError) as exc:
+                raise ValueError("RDK X5 SSH 端口必须是整数。") from exc
+            if not 1 <= port <= 65535:
+                raise ValueError("RDK X5 SSH 端口必须在 1–65535 之间。")
+            identity = str(values.get("rdk_board_identity_file", "")).strip()
+            if identity and not Path(identity).expanduser().is_file():
+                raise ValueError("RDK X5 SSH 私钥文件不存在。")
+        if action == "rdk_board_deploy":
+            bundle = Path(values.get("rdk_bundle_dir", "").strip()).expanduser()
+            model = Path(values.get("rdk_bin_path", "").strip()).expanduser()
+            if not bundle.is_dir() or not (bundle / "conversion-plan.json").is_file():
+                raise ValueError("请选择有效的 RDK X5 转换包。")
+            if not model.is_file() or model.suffix.lower() != ".bin":
+                raise ValueError("请先通过 WSL 编译，或选择有效的 RDK X5 .bin 模型。")
+            test_image = str(values.get("rdk_board_test_image", "")).strip()
+            if test_image and not Path(test_image).expanduser().is_file():
+                raise ValueError("RDK X5 真机测试图片不存在。")
     elif action == "test":
         if not TEST_SCRIPT.exists():
             raise ValueError(f"未找到 model_test.py: {TEST_SCRIPT}")
@@ -2536,6 +2624,28 @@ def pick_model_file(initial_path: str = "", include_onnx: bool = False) -> str:
     return selected
 
 
+def pick_custom_file(initial_path: str, title: str, filetypes: list[tuple[str, str]]) -> str:
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+    except Exception as exc:
+        raise RuntimeError("当前环境不支持系统文件选择器，请手动粘贴文件路径。") from exc
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    initial_dir = str(Path(initial_path).expanduser().parent) if initial_path else str(SCRIPT_ROOT)
+    if not Path(initial_dir).is_dir():
+        initial_dir = str(SCRIPT_ROOT)
+    selected = filedialog.askopenfilename(
+        parent=root,
+        initialdir=initial_dir,
+        title=title,
+        filetypes=filetypes,
+    )
+    root.destroy()
+    return selected
+
+
 def pick_directory(initial_dir: str = "", title: str = "选择文件夹") -> str:
     try:
         import tkinter as tk
@@ -2859,6 +2969,7 @@ body.sidebar-collapsed .status{display:none}
 @media(max-width:700px){.pipeline{grid-template-columns:1fr 1fr}.dashboard-focus h3{font-size:20px}.train-primary-bar{bottom:0}.nav-group{display:none}.diagnostics{grid-template-columns:1fr}}
 @media(max-width:700px){.project-toolbar{grid-template-columns:1fr}.project-toolbar .mini{text-align:left}.project-card-menu{width:100%}.project-card-menu .btn{flex:1;text-align:center}.project-modal-panel{padding:17px}}
 .deployment-workflow{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px;margin-top:13px}.deployment-step{position:relative;display:grid;grid-template-columns:28px minmax(0,1fr);gap:9px;align-items:center;min-height:58px;padding:10px 12px;border:1px solid var(--line);border-radius:12px;background:#fafbfd}.deployment-step:not(:last-child):after{content:'›';position:absolute;right:-8px;z-index:2;color:#98a4b3;font-size:19px}.deployment-step span{display:grid;place-items:center;width:28px;height:28px;border-radius:9px;background:#edf3ff;color:#2f67ca;font-weight:800}.deployment-step b{font-size:12px;line-height:1.45}@media(max-width:850px){.deployment-workflow{grid-template-columns:1fr 1fr}.deployment-step:not(:last-child):after{display:none}}@media(max-width:520px){.deployment-workflow{grid-template-columns:1fr}}
+.rdk-remote-panel{margin-top:18px;padding:18px;border:1px solid #d9e5f7;border-radius:18px;background:linear-gradient(135deg,#f7faff,#fff)}.rdk-remote-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;flex-wrap:wrap}.rdk-remote-head h3{margin:0 0 5px}.rdk-node-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px}.rdk-node{padding:15px;border:1px solid var(--line);border-radius:15px;background:#fff}.rdk-node h4{margin:0 0 5px}.rdk-node .grid{margin-top:12px}@media(max-width:880px){.rdk-node-grid{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -3141,6 +3252,35 @@ body.sidebar-collapsed .status{display:none}
         <div class="actions"><div class="btns"><button class="btn" onclick="applyDeploymentTrainingPreset()">将设备建议带到训练页</button><button class="btn" onclick="copyCommand('export')">复制导出命令</button><button class="btn" onclick="saveDefaults('部署设置')">存为默认</button></div><button class="btn blue" onclick="runAction('export')">生成部署模型 / 转换包</button></div>
         <div class="cmd" id="cmd-export"></div>
 
+        <div class="rdk-remote-panel vendor-calibration-setting is-context-hidden">
+          <div class="rdk-remote-head"><div><h3>RDK X5 一键编译与真机验证</h3><p class="hint">本机 WSL2 负责编译 Bayes-e `.bin`，官方系统板卡只负责加载、推理和性能验证。每一步共用上一步产物，不需要重复选择。</p></div><span class="asset-badge ok">WSL → SSH → BPU</span></div>
+          <div class="rdk-node-grid">
+            <div class="rdk-node">
+              <h4>① 本机 WSL 编译节点</h4><div class="mini">推荐 Ubuntu 22.04 / x86_64 / Python 3.10；工具链安装在隔离虚拟环境。</div>
+              <div class="grid">
+                <div class="field"><label>WSL 发行版</label><input id="rdk_wsl_distro" value="Ubuntu-22.04"></div>
+                <div class="field advanced-setting"><label>隔离工具链目录</label><input id="rdk_wsl_venv"></div>
+                <div class="field full"><label>RDK X5 转换包</label><div class="input-action"><input id="rdk_bundle_dir" placeholder="生成转换包后自动填入"><button class="btn" onclick="pickRdkBundleDir()">选择</button></div></div>
+                <div class="field full"><label>编译完成的 `.bin`</label><div class="input-action"><input id="rdk_bin_path" placeholder="WSL 编译成功后自动填入"><button class="btn" onclick="pickRdkBin()">选择</button></div></div>
+              </div>
+              <div class="actions"><div class="btns"><button class="btn" onclick="runAction('rdk_wsl_check')">检查 WSL</button><button class="btn" onclick="runAction('rdk_wsl_setup')">配置编译环境</button></div><button class="btn blue" onclick="runAction('rdk_wsl_compile')">编译 `.bin`</button></div>
+            </div>
+            <div class="rdk-node">
+              <h4>② RDK X5 真机</h4><div class="mini">使用 SSH 密钥和主机指纹；默认不保存密码、不要求 root。</div>
+              <div class="grid">
+                <div class="field sm"><label>用户名</label><input id="rdk_board_user" value="sunrise"></div>
+                <div class="field"><label>板卡 IP / 主机名</label><input id="rdk_board_host" placeholder="例如 192.168.1.88"></div>
+                <div class="field sm"><label>SSH 端口</label><input id="rdk_board_port" value="22" inputmode="numeric"></div>
+                <div class="field full advanced-setting"><label>SSH 私钥（可选）</label><div class="input-action"><input id="rdk_board_identity_file" placeholder="留空则使用系统默认密钥"><button class="btn" onclick="pickRdkIdentity()">选择</button></div></div>
+                <div class="field full advanced-setting"><label>板端部署根目录</label><input id="rdk_board_remote_dir"></div>
+                <div class="field full"><label>真机测试图片（可选）</label><div class="input-action"><input id="rdk_board_test_image" placeholder="不选图片时只做模型加载与性能测试"><button class="btn" onclick="pickRdkTestImage()">选择</button></div></div>
+              </div>
+              <div class="actions"><button class="btn" onclick="runAction('rdk_board_check')">检查板卡 SSH</button><button class="btn green" onclick="runAction('rdk_board_deploy')">上传并真机测试</button></div>
+            </div>
+          </div>
+          <div class="mini" style="margin-top:12px">首次连接会记录主机指纹。编译和部署日志会实时显示在“运行日志”；测试结果图自动回传并写入模型部署清单。</div>
+        </div>
+
         <div class="advanced-setting" style="margin-top:28px">
           <h2>MaixCAM 专用转换（兼容旧流程）</h2><p class="hint">仅在需要 .cvimodel + .mud 时使用。其他平台不要填写此区域。</p>
           <div class="grid">
@@ -3339,7 +3479,7 @@ body.sidebar-collapsed .status{display:none}
 </div>
 <div class="toast" id="toast"></div>
 <script>
-const fields=['dataset_root','train_task','train_images_dir','train_annotations_dir','prepared_dataset_yaml','train_ratio_percent','val_ratio_percent','img_width','img_height','image_resize_mode','epochs','batch','train_workers','patience','lr0','conda_env','base_model','torch_cuda','train_cache','raw_dataset_root','raw_images_dir','raw_labels_dir','raw_output_dir','raw_class_names','asset_scan_root','project_name','model_name','remote_train_user','remote_train_host','remote_train_port','remote_train_work_dir','deploy_model','deployment_target','export_format','export_chip','export_img_width','export_img_height','export_output_dir','export_data','deployment_calibration_dir','model_path','classes_path','calib_dir','test_image','vm_user','vm_host','vm_work_dir','test_model','test_image_file','test_image_folder','test_output_dir','camera_index','conf','label_video_dir','label_video','label_camera_index','label_source_type','label_images_input_dir','label_name','label_interval','label_images_dir','label_annotations_dir','label_prefix','label_tracker','label_start_frame','label_max_frames','label_display_scale','label_jpeg_quality'];
+const fields=['dataset_root','train_task','train_images_dir','train_annotations_dir','prepared_dataset_yaml','train_ratio_percent','val_ratio_percent','img_width','img_height','image_resize_mode','epochs','batch','train_workers','patience','lr0','conda_env','base_model','torch_cuda','train_cache','raw_dataset_root','raw_images_dir','raw_labels_dir','raw_output_dir','raw_class_names','asset_scan_root','project_name','model_name','remote_train_user','remote_train_host','remote_train_port','remote_train_work_dir','deploy_model','deployment_target','export_format','export_chip','export_img_width','export_img_height','export_output_dir','export_data','deployment_calibration_dir','rdk_wsl_distro','rdk_wsl_venv','rdk_bundle_dir','rdk_bin_path','rdk_board_user','rdk_board_host','rdk_board_port','rdk_board_identity_file','rdk_board_remote_dir','rdk_board_test_image','rdk_board_result','model_path','classes_path','calib_dir','test_image','vm_user','vm_host','vm_work_dir','test_model','test_image_file','test_image_folder','test_output_dir','camera_index','conf','label_video_dir','label_video','label_camera_index','label_source_type','label_images_input_dir','label_name','label_interval','label_images_dir','label_annotations_dir','label_prefix','label_tracker','label_start_frame','label_max_frames','label_display_scale','label_jpeg_quality'];
 
 
 
@@ -3494,6 +3634,10 @@ async function pickBaseModel(){try{const j=await api('/api/pick-base-model',{val
 async function pickDeployModel(){try{const j=await api('/api/pick-deploy-model',{values:collect()}); if(j.path){setInputValue('deploy_model',j.path); await saveValues(); updateCommands()}else toast('未选择模型')}catch(e){toast(e.message)}}
 async function pickDeployOutputDir(){try{const j=await api('/api/pick-deploy-output-dir',{values:collect()}); if(j.path){setInputValue('export_output_dir',j.path); await saveValues(); updateCommands()}else toast('未选择文件夹')}catch(e){toast(e.message)}}
 async function pickDeploymentCalibrationDir(){try{const j=await api('/api/pick-deployment-calibration-dir',{values:collect()});if(j.path){setInputValue('deployment_calibration_dir',j.path);await saveValues();updateCommands()}else toast('未选择文件夹')}catch(e){toast(e.message)}}
+async function pickRdkBundleDir(){try{const j=await api('/api/pick-rdk-bundle-dir',{values:collect()});if(j.path){setInputValue('rdk_bundle_dir',j.path);await saveValues()}else toast('未选择转换包')}catch(e){toast(e.message)}}
+async function pickRdkBin(){try{const j=await api('/api/pick-rdk-bin',{values:collect()});if(j.path){setInputValue('rdk_bin_path',j.path);await saveValues()}else toast('未选择 .bin 模型')}catch(e){toast(e.message)}}
+async function pickRdkIdentity(){try{const j=await api('/api/pick-rdk-identity',{values:collect()});if(j.path){setInputValue('rdk_board_identity_file',j.path);await saveValues()}else toast('未选择 SSH 私钥')}catch(e){toast(e.message)}}
+async function pickRdkTestImage(){try{const j=await api('/api/pick-rdk-test-image',{values:collect()});if(j.path){setInputValue('rdk_board_test_image',j.path);await saveValues()}else toast('未选择测试图片')}catch(e){toast(e.message)}}
 function videoPrefix(video){return video.stem.replace(/[^\w\u4e00-\u9fa5-]+/g,'_').replace(/^_+|_+$/g,'')||'track'}
 function videoUrl(video,path='/api/video-file'){return `${path}?path=${encodeURIComponent(video.path)}&t=${Date.now()}`}
 function videoSizeText(video){const size=Number(video.size||0); if(!size) return ''; const units=['B','KB','MB','GB','TB']; let n=size,i=0; while(n>=1024&&i<units.length-1){n/=1024;i++} return `${n>=10||i===0?n.toFixed(0):n.toFixed(1)} ${units[i]}`}
@@ -3559,7 +3703,7 @@ async function stopTrainExport(){try{const j=await api('/api/stop-train-export',
 async function loadLabelResults(){try{await saveValues(); const r=await fetch('/api/label-results'); const j=await r.json(); const box=document.getElementById('label-results'); box.innerHTML=''; const items=j.items||[]; if(!items.length){box.innerHTML='<div class="empty">当前图片目录和标注目录中还没有可显示的标注结果。</div>'; return} for(const it of items){const card=document.createElement('div'); card.className='sample'; const src='/api/label-preview?image='+encodeURIComponent(it.image)+'&xml='+encodeURIComponent(it.xml)+'&t='+Date.now(); card.innerHTML=`<img src="${src}" loading="lazy"><div class="meta"><b>${it.stem}</b><span>${(it.boxes||[]).length} 个框</span><button class="delete">删除标注</button></div>`; card.querySelector('.delete').onclick=async()=>{const imageMode=collect().label_source_type==='images'; const target=imageMode?'对应 XML 标注':'这张图片和对应 XML'; if(Date.now()>deleteConfirmUntil){if(!confirm(`确定删除${target}吗？\n确认后 5 分钟内删除标注不再重复询问。`)) return; deleteConfirmUntil=Date.now()+5*60*1000} await api('/api/delete-label-sample',{image:it.image,xml:it.xml}); card.remove(); toast(imageMode?'已删除 XML 标注':'已删除废图和 XML')}; box.appendChild(card)}}catch(e){toast(e.message)}}
 async function loadTrainPlots(){try{const r=await fetch('/api/train-plots'); const j=await r.json(); const box=document.getElementById('train-plots'); if(!box) return; const note=document.getElementById('train-plots-note'); const items=j.items||[]; if(note) note.textContent=items.length?`已发现 ${items.length} 张图片`:'训练开始后自动刷新'; if(!items.length){box.innerHTML='<div class="empty">训练进行中或尚未生成可视化图。</div>'; return} box.innerHTML=''; for(const item of items){const card=document.createElement('div'); card.className='sample'; card.innerHTML=`<img src="/api/train-plot?name=${encodeURIComponent(item.name)}&t=${Date.now()}" loading="lazy"><div class="meta"><b>${item.name}</b></div>`; box.appendChild(card)}}catch(e){}}
 function scheduleLabelResultsRefresh(){clearTimeout(labelResultsTimer); labelResultsTimer=setTimeout(()=>loadLabelResults(),350)}
-async function refreshState(){try{const r=await fetch('/api/state'); if(!r.ok) throw new Error(`HTTP ${r.status}`); const s=await r.json(); panelRuntimeState=s;setConnectionState(true); apply(s.values||{}); updateTrainProgress(s.train_progress||{});const stopButton=document.getElementById('stop-train-button');if(stopButton)stopButton.hidden=!(s.running&&s.job==='train');const startButton=document.getElementById('start-train-button');if(startButton)startButton.hidden=!!(s.running&&s.job==='train'); const log=document.getElementById('log'); log.textContent=(s.logs||[]).join(''); log.scrollTop=log.scrollHeight; const pill=document.getElementById('runPill'); pill.className='pill '+(s.running?'run':'idle'); pill.querySelector('span:last-child').textContent=s.running?'运行中':'空闲'; const jobNames={train:'模型训练',model_download:'基础模型下载',export:'多平台导出',convert:'MaixCAM 专用转换',test:'模型测试',label:'实验自动跟踪标注',annotation_personal:'启动个人标注中心',annotation_share:'开启局域网协作标注',annotation_stop:'停止协作标注中心',train_ssh:'训练 SSH 检查',vm_ssh:'转换 SSH 检查'}; document.getElementById('jobInfo').textContent=s.job?`${jobNames[s.job]||s.job} · 开始 ${s.started_at||'-'}${s.finished_at?' · 结束 '+s.finished_at:''}${s.exit_code!==null&&s.exit_code!==undefined?' · 退出码 '+s.exit_code:''}`:'暂无任务';if(s.job==='model_download'&&s.running)modelDownloadWasRunning=true;if(modelDownloadWasRunning&&s.job==='model_download'&&!s.running){modelDownloadWasRunning=false;loadBaseModels();if(Number(s.exit_code)===0)toast('基础模型下载完成，已设为当前训练模型')} const errorBox=document.getElementById('lastError'); const failed=!s.running&&s.job&&s.exit_code!==null&&Number(s.exit_code)!==0; if(s.last_error||failed){errorBox.hidden=false; errorBox.textContent=s.last_error||`上次任务失败（退出码 ${s.exit_code}），请打开“运行日志”查看具体原因。`}else errorBox.hidden=true; const box=document.getElementById('markers'); box.innerHTML=''; for(const [k,v] of Object.entries(s.markers||{})){const div=document.createElement('div'); div.className='marker'; div.innerHTML=`<b>${k}</b><span>${v}</span>`; box.appendChild(div)}renderDashboard()}catch(e){setConnectionState(false); const pill=document.getElementById('runPill'); if(pill){pill.className='pill idle';pill.querySelector('span:last-child').textContent='未连接'} const errorBox=document.getElementById('lastError'); if(errorBox){errorBox.hidden=false;errorBox.textContent='训练面板未运行。请双击 start_train_panel.cmd，然后刷新此页面。'}}}
+async function refreshState(){try{const r=await fetch('/api/state'); if(!r.ok) throw new Error(`HTTP ${r.status}`); const s=await r.json(); panelRuntimeState=s;setConnectionState(true); apply(s.values||{}); updateTrainProgress(s.train_progress||{});const stopButton=document.getElementById('stop-train-button');if(stopButton)stopButton.hidden=!(s.running&&s.job==='train');const startButton=document.getElementById('start-train-button');if(startButton)startButton.hidden=!!(s.running&&s.job==='train'); const log=document.getElementById('log'); log.textContent=(s.logs||[]).join(''); log.scrollTop=log.scrollHeight; const pill=document.getElementById('runPill'); pill.className='pill '+(s.running?'run':'idle'); pill.querySelector('span:last-child').textContent=s.running?'运行中':'空闲'; const jobNames={train:'模型训练',model_download:'基础模型下载',export:'多平台导出',convert:'MaixCAM 专用转换',test:'模型测试',label:'实验自动跟踪标注',annotation_personal:'启动个人标注中心',annotation_share:'开启局域网协作标注',annotation_stop:'停止协作标注中心',train_ssh:'训练 SSH 检查',vm_ssh:'转换 SSH 检查',rdk_wsl_check:'RDK X5 WSL 检查',rdk_wsl_setup:'RDK X5 编译环境配置',rdk_wsl_compile:'RDK X5 模型编译',rdk_board_check:'RDK X5 板卡检查',rdk_board_deploy:'RDK X5 真机部署验证'}; document.getElementById('jobInfo').textContent=s.job?`${jobNames[s.job]||s.job} · 开始 ${s.started_at||'-'}${s.finished_at?' · 结束 '+s.finished_at:''}${s.exit_code!==null&&s.exit_code!==undefined?' · 退出码 '+s.exit_code:''}`:'暂无任务';if(s.job==='model_download'&&s.running)modelDownloadWasRunning=true;if(modelDownloadWasRunning&&s.job==='model_download'&&!s.running){modelDownloadWasRunning=false;loadBaseModels();if(Number(s.exit_code)===0)toast('基础模型下载完成，已设为当前训练模型')} const errorBox=document.getElementById('lastError'); const failed=!s.running&&s.job&&s.exit_code!==null&&Number(s.exit_code)!==0; if(s.last_error||failed){errorBox.hidden=false; errorBox.textContent=s.last_error||`上次任务失败（退出码 ${s.exit_code}），请打开“运行日志”查看具体原因。`}else errorBox.hidden=true; const box=document.getElementById('markers'); box.innerHTML=''; for(const [k,v] of Object.entries(s.markers||{})){const div=document.createElement('div'); div.className='marker'; div.innerHTML=`<b>${k}</b><span>${v}</span>`; box.appendChild(div)}renderDashboard()}catch(e){setConnectionState(false); const pill=document.getElementById('runPill'); if(pill){pill.className='pill idle';pill.querySelector('span:last-child').textContent='未连接'} const errorBox=document.getElementById('lastError'); if(errorBox){errorBox.hidden=false;errorBox.textContent='训练面板未运行。请双击 start_train_panel.cmd，然后刷新此页面。'}}}
 function copyLogs(){navigator.clipboard.writeText(document.getElementById('log').textContent);toast('日志已复制')}
 function showTab(name){if(name==='label'&&!document.body.classList.contains('show-experimental'))name='overview';const target=document.getElementById('tab-'+name); if(!target) name='overview'; document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));document.getElementById('tab-'+name).classList.add('active');let activeButton=null;document.querySelectorAll('.nav button[data-tab]').forEach(x=>{const active=x.dataset.tab===name;x.classList.toggle('active',active);if(active){x.setAttribute('aria-current','page');activeButton=x}else x.removeAttribute('aria-current')});const pageTitle=document.querySelector('#tab-'+name+'>h2')?.textContent?.trim();document.title=pageTitle?`${pageTitle} · YOLO团队训练平台`:'YOLO团队训练平台';localStorage.setItem('yoloTeamPlatformTab',name);window.scrollTo({top:0,behavior:'auto'});requestAnimationFrame(()=>{if(activeButton&&matchMedia('(max-width:980px)').matches)activeButton.scrollIntoView({block:'nearest',inline:'center',behavior:'smooth'})});if(name==='overview')refreshDashboard();if(name==='projects') loadProjects();if(name==='train')scheduleTrainReadiness(80);if(name==='models') loadBaseModels(); if(name==='label') loadLabelResults(); if(name==='assets') loadModelAssets(); if(name==='collab') loadAnnotationService()}
 function enhanceFormAccessibility(){let index=0;document.querySelectorAll('.field').forEach(field=>{const label=field.querySelector(':scope > label');const control=field.querySelector(':scope > input, :scope > select, :scope > .input-action input, :scope > .input-action select');if(!label||!control)return;if(!control.id)control.id=`field-control-${++index}`;if(!label.htmlFor)label.htmlFor=control.id});document.querySelectorAll('button').forEach(button=>{if(!button.getAttribute('type'))button.setAttribute('type','button')})}
@@ -3989,6 +4133,27 @@ class PanelHandler(BaseHTTPRequestHandler):
                 values = clean_values(body.get("values"))
                 initial = values.get("deployment_calibration_dir", "") or values.get("train_images_dir", "")
                 self.send_json({"path": pick_directory(initial, "选择 RDK X5 PTQ 校准图片目录")})
+                return
+            if self.path == "/api/pick-rdk-bundle-dir":
+                values = clean_values(body.get("values"))
+                initial = values.get("rdk_bundle_dir", "") or values.get("export_output_dir", "")
+                self.send_json({"path": pick_directory(initial, "选择 rdk-x5-npu-bundle 转换包")})
+                return
+            if self.path == "/api/pick-rdk-bin":
+                values = clean_values(body.get("values"))
+                self.send_json({"path": pick_custom_file(
+                    values.get("rdk_bin_path", ""), "选择 RDK X5 Bayes-e .bin", [("RDK X5 模型", "*.bin"), ("所有文件", "*.*")]
+                )})
+                return
+            if self.path == "/api/pick-rdk-identity":
+                values = clean_values(body.get("values"))
+                self.send_json({"path": pick_custom_file(
+                    values.get("rdk_board_identity_file", ""), "选择 SSH 私钥", [("SSH 私钥", "id_* *.pem *.key"), ("所有文件", "*.*")]
+                )})
+                return
+            if self.path == "/api/pick-rdk-test-image":
+                values = clean_values(body.get("values"))
+                self.send_json({"path": pick_image_file(values.get("rdk_board_test_image", ""))})
                 return
             if self.path == "/api/pick-asset-root":
                 values = clean_values(body.get("values"))

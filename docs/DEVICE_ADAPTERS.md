@@ -62,20 +62,35 @@ python export_model.py \
   --output-dir deploy/rdk-x5
 ```
 
-输出的 `rdk-x5-npu-bundle` 包含原始 `.pt`、中间 ONNX、最多 50 张校准图片、`classes.txt`、`conversion-plan.json`、转换脚本和校验脚本。有 `.pt` 时，脚本会调用官方 `export_monkey_patch.py` 重新导出兼容 ONNX，不直接假定普通 Ultralytics ONNX 满足板端输出协议。
+输出的 `rdk-x5-npu-bundle` 包含原始 `.pt`、中间 ONNX、最多 50 张校准图片、`classes.txt`、`conversion-plan.json`、隔离环境脚本、转换脚本和校验脚本。有 `.pt` 时，脚本会调用官方 `export_monkey_patch.py` 重新导出兼容 ONNX，不直接假定普通 Ultralytics ONNX 满足板端输出协议。
 
-在 x86_64 Ubuntu 22.04 + Python 3.10 的官方 OpenExplorer 环境中执行：
+### 推荐：页面内 WSL → SSH 工作流
+
+Windows 已安装 WSL2 和 Ubuntu 22.04 时，不需要 Docker：
+
+1. 生成转换包后点击“检查 WSL”。
+2. 首次点击“配置编译环境”；平台在 WSL 用户目录建立专用 Python 3.10 虚拟环境。
+3. 点击“编译 `.bin`”；工具会调用官方 `rdk_model_zoo` 与 `hb_mapper`，产物和日志回写到 Windows 转换包。
+4. 给安装官方系统的 RDK X5 配置 SSH 密钥，填写用户名、IP 和端口。
+5. 点击“检查板卡 SSH”，再点击“上传并真机测试”。未选择图片时只做模型加载与性能检查；选择图片后还会执行官方 Python 推理并下载结果图。
+
+默认板端目录为 `~/yolo-team-training-platform/rdk-x5-deployments`。平台不保存密码、不修改 `sudoers`，首次连接按 OpenSSH 规则记录主机指纹。板卡只负责推理验证，`.bin` 始终在 x86_64 WSL 中编译。
+
+### 手动/离线编译
+
+也可以把整个转换包复制到 x86_64 Ubuntu 22.04 + Python 3.10 后执行：
 
 ```bash
-pip install rdkx5-yolo-mapper
-pip install -r requirements-rdk-x5.txt
-hb_mapper --version
 cd rdk-x5-npu-bundle
+bash setup_rdk_x5_env.sh
+source .venv-rdk-x5/bin/activate
 bash convert_rdk_x5.sh
 bash verify_rdk_x5.sh output/你的模型_bayese_640x640_nv12.bin
 ```
 
-工具链和板端 `libdnn` / `hbm_runtime` 应保持匹配。板端建议 RDK OS 3.5.0 或更新版本；发布前还要用留出的测试集复测量化精度。当前 Windows 自动化验证转换包结构和参数，但不替代真实 OpenExplorer 编译与 X5 真机运行。
+环境脚本锁定经过本项目实测的 Mapper、CPU PyTorch、Ultralytics、NumPy、ONNX Runtime 与 `setuptools` 组合。工具链和板端 `libdnn` / `hbm_runtime` 应保持匹配，板端建议 RDK OS 3.5.0 或更新版本。
+
+本项目已在 Ubuntu 22.04 WSL2 用 YOLO11n 和 20 张校准图片真实生成 Bayes-e INT8/NV12 `.bin` 并通过 `hb_model_info`。编译器性能估算不等于板端摄像头全链路性能；发布模型前仍须在自己的 RDK X5 上复测精度、模型加载、前后处理和延迟。
 
 ## 为什么保留 ONNX
 

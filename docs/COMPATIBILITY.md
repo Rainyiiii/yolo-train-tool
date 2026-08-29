@@ -14,10 +14,12 @@
 | 浏览器 | Chrome、Edge、Firefox 等现代浏览器 |
 | macOS | 当前未提供一键部署脚本，未做完整验证 |
 | ARM/树莓派 | Raspberry Pi 4/5 独立 NCNN/ONNX 配置；训练仍建议使用 x86_64 主机，真机矩阵持续补充 |
-| 地瓜机器人 RDK X5 | 生成 Bayes-e INT8 `.bin` 转换包；最终编译需 x86 Ubuntu 22.04 + OpenExplorer，板端建议 RDK OS 3.5+ |
+| 地瓜机器人 RDK X5 | 本机 Ubuntu 22.04 WSL2 一键编译 Bayes-e INT8 `.bin`，再通过 SSH 上传官方系统验证；板端建议 RDK OS 3.5+ |
 | Rockchip / MaixCAM | 已提供设备配置或专用转换入口；不同板型仍需按文档使用厂商工具链并真机验证 |
 
 Python 3.14 是当前最新稳定功能版本；Python 3.15 仍是预发布版本，因此暂不列入保证范围。即使个别依赖已经提供对应 wheel，也可能出现 PyTorch、OpenCV 或 ONNX 组件不兼容。
+
+RDK X5 编译工具链是例外：当前锁定 Ubuntu 22.04、x86_64、Python 3.10。它运行在独立 WSL 虚拟环境中，不受 Windows 主训练环境 Python 3.10–3.14 范围影响。平台不要求 Docker；板卡侧需要可用的 SSH 和 `hbm_runtime`，图片推理还需要 Git 或预先准备的官方 Model Zoo。
 
 ## NVIDIA GPU 要求
 

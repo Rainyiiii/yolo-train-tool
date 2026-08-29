@@ -16,7 +16,7 @@ cd yolo-train-tool
 普通队友直接双击发布页中的安装器：
 
 ```text
-YOLO-Team-Training-Platform-Setup-v3.2.13-beta.exe
+YOLO-Team-Training-Platform-Setup-v3.2.14-beta.exe
 ```
 
 安装器会自动：
@@ -142,7 +142,16 @@ ONNX 仍是厂商工具链之间的主要交接格式。项目安装器会自动
 
 如果使用远程训练环境，远程工具会根据 CPU/CUDA 配置选择 `onnxruntime` 或 `onnxruntime-gpu`。
 
-通用 INT8 导出需要填写 `data.yaml`。RDK X5 会强制使用厂商 PTQ，并要求选择 20–50 张代表性图片；Windows 端生成可移植转换包，最终 `.bin` 在 x86 Ubuntu 22.04 的 OpenExplorer 中编译。导出成功不代表板端适配已经完成；部署前必须在目标设备核对预处理、类别顺序、输出张量、速度和精度。
+通用 INT8 导出需要填写 `data.yaml`。RDK X5 会强制使用厂商 PTQ，并要求选择 20–50 张代表性图片。生成转换包后，在同页按顺序操作：
+
+1. “检查 WSL”确认本机存在 Ubuntu 22.04、x86_64 与 Python 3.10。
+2. 首次点击“配置编译环境”，在 WSL 用户目录建立隔离工具链；无需 Docker。
+3. 点击“编译 `.bin`”，成功后模型路径会自动回填，部署清单状态更新为 `compiled`。
+4. 填写官方 RDK X5 系统的 SSH 用户名与局域网 IP；推荐提前配置 SSH 密钥。
+5. “检查板卡 SSH”确认 aarch64、`hbm_runtime` 和可选的 `hrt_model_exec`。
+6. 点击“上传并真机测试”；选择测试图片时会运行官方示例并把结果图回传到转换包。
+
+平台不保存 SSH 密码，也不会要求 root。编译成功不代表板端适配已经完成；部署前必须在目标设备核对预处理、类别顺序、输出张量、速度和留出测试集精度。
 
 ## 9. 半自动标注
 

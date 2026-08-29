@@ -211,7 +211,7 @@ def export_model(args: argparse.Namespace) -> tuple[Path, Path]:
     print(f"模型产物：{deployment_artifact}")
     if vendor_ptq:
         print(f"中间 ONNX：{artifact}")
-        print(f"最终目标：{profile['final_artifact']}（当前状态：等待 OpenExplorer 转换）")
+        print(f"最终目标：{profile['final_artifact']}（当前状态：等待 WSL/OpenExplorer 转换）")
         print(f"转换脚本：{vendor_conversion['conversion_script']}")
     print(f"部署清单：{manifest_path}")
     print(f"下一步：{profile['next_step']}")

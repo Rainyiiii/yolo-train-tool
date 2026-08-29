@@ -1,6 +1,6 @@
 import unittest
 
-from train_panel import HTML_PAGE
+from train_panel import HTML_PAGE, RDK_REMOTE_SCRIPT
 
 
 class WorkspaceLayoutTests(unittest.TestCase):
@@ -98,6 +98,7 @@ class WorkspaceLayoutTests(unittest.TestCase):
         self.assertIn("function applyDeploymentTrainingPreset", HTML_PAGE)
         self.assertIn("function useTrainingImagesForCalibration", HTML_PAGE)
         self.assertIn("最终产物：", HTML_PAGE)
+        self.assertTrue(RDK_REMOTE_SCRIPT.is_file())
 
     def test_mobile_falls_back_to_document_scrolling(self) -> None:
         self.assertIn("html,body{height:auto;overflow:auto}", HTML_PAGE)

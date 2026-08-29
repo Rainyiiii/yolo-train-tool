@@ -41,7 +41,7 @@ def _copy_calibration_images(paths: list[Path], destination: Path, limit: int = 
 
 def _conversion_script(pt_name: str, onnx_name: str) -> str:
     source_selection = (
-        f'''python3 -c "import ultralytics, torch, onnx" >/dev/null 2>&1 || {{ echo "缺少 ONNX 导出依赖；请执行 pip install -r requirements-rdk-x5.txt" >&2; exit 1; }}
+        f'''python3 -c "import ultralytics, torch, onnx; from ultralytics.nn.modules.block import AAttn" >/dev/null 2>&1 || {{ echo "缺少兼容的 ONNX 导出依赖；请先执行 bash setup_rdk_x5_env.sh" >&2; exit 1; }}
 PT_PATH="$MODEL_DIR/{pt_name}"
 python3 "$CONVERSION_DIR/export_monkey_patch.py" --pt "$PT_PATH"
 ONNX_PATH="${{PT_PATH%.pt}}.onnx"
@@ -57,7 +57,7 @@ ROOT="$(cd "$(dirname "${{BASH_SOURCE[0]}}")" && pwd)"
 MODEL_DIR="$ROOT/model"
 CAL_DIR="$ROOT/calibration_images"
 OUTPUT_DIR="$ROOT/output"
-WORK_DIR="$ROOT/.work"
+WORK_DIR="${{RDK_WORK_DIR:-$ROOT/.work}}"
 MODEL_ZOO_DIR="${{RDK_MODEL_ZOO_DIR:-$ROOT/.rdk_model_zoo}}"
 
 command -v python3 >/dev/null || {{ echo "缺少 python3" >&2; exit 1; }}
@@ -114,6 +114,31 @@ echo "验证完成：$MODEL"
 '''
 
 
+def _setup_script() -> str:
+    return '''#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VENV="${RDK_VENV_DIR:-$ROOT/.venv-rdk-x5}"
+
+python3 -c 'import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 10) else 1)' || {
+  echo "RDK X5 轻量工具链需要 Python 3.10" >&2
+  exit 1
+}
+python3 -c 'import venv' >/dev/null 2>&1 || {
+  echo "缺少 python3-venv；Ubuntu 可执行 sudo apt install python3.10-venv" >&2
+  exit 1
+}
+if [ ! -x "$VENV/bin/python" ]; then python3 -m venv "$VENV"; fi
+"$VENV/bin/python" -m pip install "pip==26.2.1" "setuptools==80.9.0" "wheel==0.48.0"
+"$VENV/bin/python" -m pip install -r "$ROOT/requirements-rdk-x5.txt"
+# Mapper 1.0.0 会安装旧版 Ultralytics；官方当前 monkey patch 需要 AAttn。
+"$VENV/bin/python" -m pip install --no-deps "ultralytics==8.4.120"
+"$VENV/bin/hb_mapper" --version
+"$VENV/bin/python" -c 'import cv2, numpy, onnx, onnxruntime, pkg_resources, torch, ultralytics; from ultralytics.nn.modules.block import AAttn; print(f"RDK 编译环境已就绪：torch={torch.__version__} ultralytics={ultralytics.__version__}")'
+echo "请执行：source \"$VENV/bin/activate\""
+'''
+
+
 def create_rdk_x5_bundle(
     output_dir: Path,
     source_model: Path,
@@ -148,14 +173,23 @@ def create_rdk_x5_bundle(
     classes = [name for _, name in sorted(class_names.items(), key=class_order)]
     (bundle / "classes.txt").write_text("\n".join(classes) + ("\n" if classes else ""), encoding="utf-8")
     (bundle / "requirements-rdk-x5.txt").write_text(
-        "ultralytics>=8.4,<9\nonnx>=1.17,<2\nonnxruntime>=1.18,<2\nopencv-python>=4.10,<5\nnumpy>=1.24\n",
+        "--extra-index-url https://download.pytorch.org/whl/cpu\n"
+        "rdkx5-yolo-mapper==1.0.0\n"
+        "torch==2.13.0+cpu\n"
+        "torchvision==0.28.0+cpu\n"
+        "requests>=2.23,<3\n"
+        "polars>=0.20,<2\n"
+        "nvidia-ml-py>=12,<14\n"
+        "ultralytics-thop>=2,<3\n",
         encoding="utf-8",
         newline="\n",
     )
     convert_script = bundle / "convert_rdk_x5.sh"
     verify_script = bundle / "verify_rdk_x5.sh"
+    setup_script = bundle / "setup_rdk_x5_env.sh"
     convert_script.write_text(_conversion_script(pt_name, onnx_name), encoding="utf-8", newline="\n")
     verify_script.write_text(_verify_script(), encoding="utf-8", newline="\n")
+    setup_script.write_text(_setup_script(), encoding="utf-8", newline="\n")
 
     height, width = (input_size, input_size) if isinstance(input_size, int) else input_size
     plan = {
@@ -196,12 +230,13 @@ def create_rdk_x5_bundle(
 推荐 Ubuntu 22.04 + Python 3.10。进入官方 RDK X5 OpenExplorer 环境，或安装轻量工具链：
 
 ```bash
-pip install rdkx5-yolo-mapper
-pip install -r requirements-rdk-x5.txt
-hb_mapper --version
 cd /path/to/rdk-x5-npu-bundle
+bash setup_rdk_x5_env.sh
+source .venv-rdk-x5/bin/activate
 bash convert_rdk_x5.sh
 ```
+
+`setup_rdk_x5_env.sh` 会建立隔离环境并锁定已验证的 Mapper、CPU 版 PyTorch、Ultralytics、NumPy、ONNX Runtime 与 `setuptools` 版本，避免污染系统 Python。平台内的“配置 WSL 编译环境”会完成同样的工作，不需要 Docker。
 
 脚本会固定拉取官方 `rdk_model_zoo` 的 `rdk_x5` 分支，调用其 Ultralytics YOLO 导出/Mapper 流程，最终文件位于 `output/*_bayese_*_nv12.bin`。
 
@@ -226,6 +261,7 @@ bash verify_rdk_x5.sh output/你的模型.bin
         "calibration_source_count": len(images),
         "conversion_script": convert_script,
         "verification_script": verify_script,
+        "setup_script": setup_script,
         "expected_final_artifact": str(output_target / "*_bayese_*_nv12.bin"),
         "status": "conversion_required",
         "plan": plan,

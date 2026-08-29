@@ -36,13 +36,22 @@ class RdkX5DeploymentTest(unittest.TestCase):
             self.assertTrue((bundle / "model" / "intermediate-model.onnx").is_file())
             self.assertEqual(len(calibration_images(bundle / "calibration_images")), 24)
             self.assertEqual((bundle / "classes.txt").read_text(encoding="utf-8"), "good\nbad\n")
-            self.assertIn("ultralytics>=8.4,<9", (bundle / "requirements-rdk-x5.txt").read_text(encoding="utf-8"))
+            requirements = (bundle / "requirements-rdk-x5.txt").read_text(encoding="utf-8")
+            self.assertIn("rdkx5-yolo-mapper==1.0.0", requirements)
+            self.assertIn("torch==2.13.0+cpu", requirements)
+            self.assertNotIn("ultralytics==", requirements)
+
+            setup = (bundle / "setup_rdk_x5_env.sh").read_text(encoding="utf-8")
+            self.assertIn("setuptools==80.9.0", setup)
+            self.assertIn("ultralytics==8.4.120", setup)
+            self.assertIn("AAttn", setup)
 
             script = (bundle / "convert_rdk_x5.sh").read_text(encoding="utf-8")
             self.assertIn("export_monkey_patch.py", script)
             self.assertIn("--branch rdk_x5", script)
             self.assertIn("hb_mapper", script)
             self.assertIn("*_bayese_*_nv12.bin", script)
+            self.assertIn("RDK_WORK_DIR", script)
             self.assertNotIn(".hbm", script)
             self.assertNotIn("rm -rf", script)
 

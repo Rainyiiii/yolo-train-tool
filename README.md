@@ -12,7 +12,7 @@ YOLO团队训练平台是一个面向 Windows、Ubuntu 和多种边缘部署平�
 
 ## 队友第一次使用
 
-1. 双击 `YOLO-Team-Training-Platform-Setup-v3.2.13-beta.exe`。
+1. 双击 `YOLO-Team-Training-Platform-Setup-v3.2.14-beta.exe`。
 2. 保持默认安装目录 `D:\YOLOTeamTrainingPlatform`，点击安装。
 3. 安装器自动准备 .NET、WebView2、Python、PyTorch、ONNX Runtime 和平台依赖。
 4. 安装完成后从桌面打开“YOLO团队训练平台”。
@@ -62,7 +62,7 @@ Ubuntu 上访问：<http://127.0.0.1:8989/>。如果要从其他电脑访问，�
 维护者运行 `installer/windows/build-installer.ps1`，程序会在 `dist` 文件夹生成：
 
 ```text
-YOLO-Team-Training-Platform-Setup-v3.2.13-beta.exe
+YOLO-Team-Training-Platform-Setup-v3.2.14-beta.exe
 ```
 
 安装器不会打包本机 Workspace、私人路径、训练数据、日志和训练结果。
@@ -76,7 +76,7 @@ YOLO-Team-Training-Platform-Setup-v3.2.13-beta.exe
 | `desktop/YOLOTeamTrainingPlatform.Desktop/` | WebView2 Windows 应用源码 |
 | `installer/windows/` | 一键安装器及自动构建源码 |
 | `train_panel.py`、`annotation_*.py` | 训练平台与协作标注核心 |
-| `host_train_export.py`、`export_model.py`、`rdk_x5_deployment.py` | 训练、多设备导出和 RDK X5 NPU 转换包 |
+| `host_train_export.py`、`export_model.py`、`rdk_x5_deployment.py`、`rdk_x5_remote.py` | 训练、多设备导出、RDK X5 NPU 转换包及 WSL/SSH 部署 |
 | `tests/` | 自动测试 |
 
 WebView2 只是桌面承载层，不复制训练逻辑；桌面应用与浏览器模式共享同一个本地服务。详细说明见[开发与仓库结构](docs/DEVELOPMENT.md)。
@@ -177,7 +177,7 @@ dataset/
 | NVIDIA Jetson | TensorRT engine |
 | Intel CPU/GPU/NPU | OpenVINO |
 
-导出页会直接显示“训练 → 导出/转换 → 校验 → 板端运行”的连续步骤。RDK X5 会打包原始权重、中间 ONNX、20–50 张校准图片、官方转换入口和板端校验脚本；页面不会把 ONNX 误报成 NPU 已完成，只有 OpenExplorer 编译产生的 `.bin` 才是 X5 BPU 运行模型。任何 INT8 模型都要在目标设备上重新验证精度。
+导出页会直接显示“训练 → 导出/转换 → 校验 → 板端运行”的连续步骤。RDK X5 会打包原始权重、中间 ONNX、20–50 张校准图片、隔离环境脚本和官方转换入口；随后可直接在页面检查/配置本机 Ubuntu 22.04 WSL2、编译 Bayes-e `.bin`，再通过 SSH 上传到官方 RDK 系统做模型加载、性能与可选图片推理。全程不需要 Docker，板卡也不承担编译。页面不会把 ONNX 误报成 NPU 已完成；任何 INT8 模型都要在目标设备上重新验证精度。
 
 ## 硬件与环境
 
@@ -236,6 +236,7 @@ video_track_label.py     辅助标注
 device_profiles.py       设备配置档
 export_model.py          多平台模型导出
 rdk_x5_deployment.py     RDK X5 NPU 转换包生成与校验入口
+rdk_x5_remote.py         本机 WSL 编译与 RDK X5 SSH 真机验证
 ```
 
 用户设置保存在 `Workspace/config/settings.json`，该文件不会进入安装器或 Git 仓库。

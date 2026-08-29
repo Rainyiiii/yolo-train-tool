@@ -1,5 +1,14 @@
 # 更新记录
 
+## 3.2.14-beta
+
+- 部署页新增 RDK X5 “本机 WSL 编译节点 → SSH 板卡 → BPU 验证”连续工作流：可检查与配置 WSL、编译 Bayes-e `.bin`、检查板卡环境、上传模型并执行模型加载/性能/图片推理。
+- 新增 `rdk_x5_remote.py`，全程使用参数数组、输入校验、SSH 主机指纹和无密码批处理模式；不保存板卡密码、不要求 root，部署目录严格限制为用户指定的 Linux 目录。
+- RDK 转换包新增独立 `setup_rdk_x5_env.sh`，锁定已验证的 Python 3.10、CPU PyTorch、Mapper、Ultralytics、NumPy、ONNX Runtime 与 `setuptools` 组合，不依赖 Docker，也不污染训练环境。
+- 修复官方 Mapper 与新版 `setuptools`、官方 Monkey Patch 与旧版 Ultralytics 的真实兼容问题；编译工作目录移至 WSL 文件系统，避免 Windows 空格路径干扰工具链。
+- 已在本机 Ubuntu 22.04 WSL2 完成真实 YOLO11n、20 张校准图片到 Bayes-e INT8/NV12 `.bin` 的全链路编译与 `hb_model_info` 检查；RDK X5 板端 SSH/推理仍需连接实机后验证。
+- 完成 78 项自动化测试，并将新增后端纳入 Windows 安装包。
+
 ## 3.2.13-beta
 
 - 把树莓派 4、树莓派 5 拆成独立设备配置：分别提供 416×416 与 640×640 起步建议，统一优先导出 ARM CPU 友好的 NCNN，并保留 ONNX 回退。
