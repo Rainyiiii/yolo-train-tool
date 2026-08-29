@@ -12,12 +12,14 @@ YOLO团队训练平台是一个面向 Windows、Ubuntu 和多种边缘部署平�
 
 ## 队友第一次使用
 
-1. 双击 `YOLO-Team-Training-Platform-Setup-v3.2.14-beta.exe`。
+1. 双击 `YOLO-Team-Training-Platform-Setup-v3.2.15-beta.exe`。
 2. 保持默认安装目录 `D:\YOLOTeamTrainingPlatform`，点击安装。
 3. 安装器自动准备 .NET、WebView2、Python、PyTorch、ONNX Runtime 和平台依赖。
 4. 安装完成后从桌面打开“YOLO团队训练平台”。
 5. 打开“工作台总览”，平台会根据当前项目状态提示下一步。
 6. 导入包含 `data.yaml` 的数据集，选择基础模型与训练配置，再点击“检查并开始训练”。
+
+WSL / Ubuntu / RDK X5 编译工具链不是主安装包的必选依赖。只有需要把模型编译成 RDK X5 Bayes-e `.bin` 的成员，才在“部署与导出 → RDK X5”中点击安装；页面会分层显示环境状态，也可单独移除平台工具链而保留 Ubuntu 和用户数据。
 
 平台新建数据集时默认按照训练 80% / 验证 10% / 测试 10% 划分。训练集用于学习，验证集用于选择最佳模型，测试集只在训练完成后对 `best.pt` 做独立评估；导入已有 YOLO 数据集时保留其原始 `train / valid / test`。
 
@@ -62,7 +64,7 @@ Ubuntu 上访问：<http://127.0.0.1:8989/>。如果要从其他电脑访问，�
 维护者运行 `installer/windows/build-installer.ps1`，程序会在 `dist` 文件夹生成：
 
 ```text
-YOLO-Team-Training-Platform-Setup-v3.2.14-beta.exe
+YOLO-Team-Training-Platform-Setup-v3.2.15-beta.exe
 ```
 
 安装器不会打包本机 Workspace、私人路径、训练数据、日志和训练结果。

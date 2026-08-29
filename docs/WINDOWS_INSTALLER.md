@@ -5,7 +5,7 @@
 队友只需要运行：
 
 ```text
-YOLO-Team-Training-Platform-Setup-v3.2.14-beta.exe
+YOLO-Team-Training-Platform-Setup-v3.2.15-beta.exe
 ```
 
 安装器默认选择 `D:\YOLOTeamTrainingPlatform`，并自动完成：
@@ -18,6 +18,10 @@ YOLO-Team-Training-Platform-Setup-v3.2.14-beta.exe
 6. 安装 `onnxruntime` 等平台依赖；
 7. 创建规范化 Workspace；
 8. 创建桌面和开始菜单快捷方式。
+
+WSL、Ubuntu 22.04 和 RDK X5 Mapper 不随主安装强制部署。需要 RDK X5 `.bin` 的成员可在应用“部署与导出”页按需安装；Windows 可能弹出管理员授权并要求重启。环境卡会分别显示 WSL、Ubuntu、Python 3.10 和 Mapper 状态。
+
+应用内“移除 RDK 环境”只接受带平台管理标记且位于当前 WSL 用户目录内的专用虚拟环境，并清理平台命名的 RDK Model Zoo/编译缓存。它不会执行 `wsl --unregister`，因此不会删除 Ubuntu 发行版、其他 Linux 文件、训练数据或 Windows 侧已生成模型。
 
 首次安装需要联网下载 Python/PyTorch/PyPI 依赖，耗时取决于网络和显卡版本。覆盖安装新版时默认执行增量更新：根据依赖清单指纹和本地健康检查复用已有 Runtime；只有缺少组件、依赖要求变化或健康检查失败时才执行补装，并且不会无条件升级全部包。已有安装会显示“升级与运行环境修复”页面，“完整修复运行环境”默认不勾选；仅在用户主动勾选后删除并重建当前安装目录内的 Runtime，Workspace 不受影响。安装器内的“正在安装运行环境”页面会显示三个阶段和实时滚动输出；完整日志同时写入 `D:\YOLOTeamTrainingPlatform\Workspace\logs\installation.log`。安装失败时平台不会被启动，请保留该日志用于排错。
 

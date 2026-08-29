@@ -41,12 +41,22 @@ class DeploymentWorkflowTest(unittest.TestCase):
         self.assertIn("sunrise", deploy_command)
         self.assertNotIn("--identity-file", deploy_command)
 
+        install_command = [str(item) for item in build_rdk_remote_cmd("rdk_wsl_install", values)]
+        remove_command = [str(item) for item in build_rdk_remote_cmd("rdk_wsl_remove", values)]
+        self.assertIn("wsl-install", install_command)
+        self.assertIn("wsl-remove", remove_command)
+
     def test_rdk_remote_controls_are_visible_in_the_deployment_page(self):
         for fragment in (
             'id="rdk_wsl_distro"',
             'id="rdk_bundle_dir"',
             'id="rdk_bin_path"',
             'id="rdk_board_host"',
+            'id="rdk-env-grid"',
+            'id="rdk-wsl-install-button"',
+            'id="rdk-wsl-remove-button"',
+            "/api/rdk-environment-status",
+            "function removeRdkToolchain()",
             "runAction('rdk_wsl_compile')",
             "runAction('rdk_board_deploy')",
         ):

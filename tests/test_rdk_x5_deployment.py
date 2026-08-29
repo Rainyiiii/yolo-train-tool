@@ -45,6 +45,7 @@ class RdkX5DeploymentTest(unittest.TestCase):
             self.assertIn("setuptools==80.9.0", setup)
             self.assertIn("ultralytics==8.4.120", setup)
             self.assertIn("AAttn", setup)
+            self.assertIn(".yolo-team-rdk-toolchain", setup)
 
             script = (bundle / "convert_rdk_x5.sh").read_text(encoding="utf-8")
             self.assertIn("export_monkey_patch.py", script)

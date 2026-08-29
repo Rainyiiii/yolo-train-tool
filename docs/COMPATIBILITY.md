@@ -19,7 +19,9 @@
 
 Python 3.14 是当前最新稳定功能版本；Python 3.15 仍是预发布版本，因此暂不列入保证范围。即使个别依赖已经提供对应 wheel，也可能出现 PyTorch、OpenCV 或 ONNX 组件不兼容。
 
-RDK X5 编译工具链是例外：当前锁定 Ubuntu 22.04、x86_64、Python 3.10。它运行在独立 WSL 虚拟环境中，不受 Windows 主训练环境 Python 3.10–3.14 范围影响。平台不要求 Docker；板卡侧需要可用的 SSH 和 `hbm_runtime`，图片推理还需要 Git 或预先准备的官方 Model Zoo。
+RDK X5 编译工具链是例外：当前锁定 Ubuntu 22.04、x86_64、Python 3.10。它是按需安装的独立 WSL 虚拟环境，不受 Windows 主训练环境 Python 3.10–3.14 范围影响；不使用 RDK X5 的成员无需安装。平台不要求 Docker；板卡侧需要可用的 SSH 和 `hbm_runtime`，图片推理还需要 Git 或预先准备的官方 Model Zoo。
+
+平台内的环境状态卡分别检查 WSL 命令、Ubuntu 发行版、Python 3.10 和 Mapper。安装 WSL 需要 Windows 10 2004（Build 19041）或更新版本，或 Windows 11，并可能要求重启。平台只提供工具链级移除，不提供发行版注销按钮；微软明确说明 `wsl --unregister` 会永久删除该发行版的全部数据、设置和软件，因此必须由用户在平台外自行备份后处理。
 
 ## NVIDIA GPU 要求
 

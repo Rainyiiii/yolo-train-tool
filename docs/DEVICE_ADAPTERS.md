@@ -64,17 +64,20 @@ python export_model.py \
 
 输出的 `rdk-x5-npu-bundle` 包含原始 `.pt`、中间 ONNX、最多 50 张校准图片、`classes.txt`、`conversion-plan.json`、隔离环境脚本、转换脚本和校验脚本。有 `.pt` 时，脚本会调用官方 `export_monkey_patch.py` 重新导出兼容 ONNX，不直接假定普通 Ultralytics ONNX 满足板端输出协议。
 
-### 推荐：页面内 WSL → SSH 工作流
+### 推荐：页面内可选 WSL → SSH 工作流
 
-Windows 已安装 WSL2 和 Ubuntu 22.04 时，不需要 Docker：
+RDK X5 编译环境不是主平台的强制依赖。不使用 RDK X5 的成员无需安装；需要时也不要求 Docker：
 
-1. 生成转换包后点击“检查 WSL”。
-2. 首次点击“配置编译环境”；平台在 WSL 用户目录建立专用 Python 3.10 虚拟环境。
-3. 点击“编译 `.bin`”；工具会调用官方 `rdk_model_zoo` 与 `hb_mapper`，产物和日志回写到 Windows 转换包。
-4. 给安装官方系统的 RDK X5 配置 SSH 密钥，填写用户名、IP 和端口。
-5. 点击“检查板卡 SSH”，再点击“上传并真机测试”。未选择图片时只做模型加载与性能检查；选择图片后还会执行官方 Python 推理并下载结果图。
+1. 选择 RDK X5 后查看“可选编译环境”：Windows WSL、Ubuntu 22.04、Python 3.10、RDK Mapper 四层独立显示。
+2. 缺少 WSL/Ubuntu 时点击“安装 WSL + Ubuntu”。Windows 会请求管理员授权，并可能要求重启；已经安装的发行版不会重复创建。
+3. 点击“配置编译环境”；平台只在当前 WSL 用户目录建立带管理标记的专用 Python 3.10 虚拟环境。
+4. 生成转换包并点击“编译 `.bin`”；工具会调用官方 `rdk_model_zoo` 与 `hb_mapper`，产物和日志回写到 Windows 转换包。
+5. 给安装官方系统的 RDK X5 配置 SSH 密钥，填写用户名、IP 和端口。
+6. 点击“检查板卡 SSH”，再点击“上传并真机测试”。未选择图片时只做模型加载与性能检查；选择图片后还会执行官方 Python 推理并下载结果图。
 
 默认板端目录为 `~/yolo-team-training-platform/rdk-x5-deployments`。平台不保存密码、不修改 `sudoers`，首次连接按 OpenSSH 规则记录主机指纹。板卡只负责推理验证，`.bin` 始终在 x86_64 WSL 中编译。
+
+“移除 RDK 环境”只删除带平台标记、位于当前 WSL 用户目录中的 RDK 虚拟环境，以及平台明确命名的 Model Zoo 和编译任务缓存；Ubuntu 发行版、其他 Linux 文件、Windows 训练数据和已生成 `.bin` 都会保留。平台故意不提供 `wsl --unregister`，因为该命令会永久删除整个发行版的数据。
 
 ### 手动/离线编译
 
@@ -108,6 +111,8 @@ ONNX 是本项目的通用中间格式，不等于每块板上的最终最优格
 - [Rockchip RKNN Toolkit2](https://github.com/airockchip/rknn-toolkit2)
 - [D-Robotics RDK X5 Model Zoo](https://github.com/D-Robotics/rdk_model_zoo/tree/rdk_x5)
 - [D-Robotics Ultralytics YOLO 转换](https://github.com/D-Robotics/rdk_model_zoo/tree/rdk_x5/samples/vision/ultralytics_yolo/conversion)
+- [Microsoft：安装 WSL](https://learn.microsoft.com/windows/wsl/install)
+- [Microsoft：WSL 基本命令与注销风险](https://learn.microsoft.com/windows/wsl/basic-commands)
 - [Sipeed MaixCAM 模型转换](https://wiki.sipeed.com/maixpy/doc/en/ai_model_converter/maixcam.html)
 
 ## 新增设备适配器

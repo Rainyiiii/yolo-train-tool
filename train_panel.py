@@ -36,6 +36,7 @@ from device_profiles import DEVICE_PROFILES, public_device_profiles
 from model_assets import collect_model_assets, register_asset_manifest, register_asset_root, register_external_model
 from annotation_service import status_payload as annotation_service_status
 from project_manager import activate_project, create_project, delete_project, duplicate_project, inspect_dataset, project_catalog, update_project
+from rdk_x5_remote import inspect_wsl_environment
 from system_check import build_report
 from platform_paths import (
     ANNOTATION_HUB_DIR,
@@ -1603,10 +1604,12 @@ def build_export_cmd(values: dict[str, Any]) -> list[Any]:
 
 def build_rdk_remote_cmd(action: str, values: dict[str, Any]) -> list[Any]:
     cmd: list[Any] = [sys.executable, str(RDK_REMOTE_SCRIPT)]
-    if action in {"rdk_wsl_check", "rdk_wsl_setup", "rdk_wsl_compile"}:
+    if action in {"rdk_wsl_install", "rdk_wsl_check", "rdk_wsl_setup", "rdk_wsl_remove", "rdk_wsl_compile"}:
         command_name = {
+            "rdk_wsl_install": "wsl-install",
             "rdk_wsl_check": "wsl-check",
             "rdk_wsl_setup": "wsl-setup",
+            "rdk_wsl_remove": "wsl-remove",
             "rdk_wsl_compile": "wsl-compile",
         }[action]
         cmd += [command_name, "--distro", values["rdk_wsl_distro"], "--venv", values["rdk_wsl_venv"]]
@@ -1687,7 +1690,7 @@ def command_for(action: str, values: dict[str, Any]) -> list[Any]:
         return build_convert_cmd(values)
     if action == "export":
         return build_export_cmd(values)
-    if action in {"rdk_wsl_check", "rdk_wsl_setup", "rdk_wsl_compile", "rdk_board_check", "rdk_board_deploy"}:
+    if action in {"rdk_wsl_install", "rdk_wsl_check", "rdk_wsl_setup", "rdk_wsl_remove", "rdk_wsl_compile", "rdk_board_check", "rdk_board_deploy"}:
         return build_rdk_remote_cmd(action, values)
     if action == "test":
         return build_test_cmd(values)
@@ -1802,7 +1805,7 @@ def validate(action: str, values: dict[str, Any]) -> None:
                 raise ValueError("RDK X5 NPU 转换需要选择代表性校准图片目录（建议 20–50 张）。")
         if as_bool(values.get("export_int8")) and not profile.get("vendor_ptq") and not values.get("export_data", "").strip():
             raise ValueError("INT8 导出需要填写 data.yaml 作为代表性校准数据。")
-    elif action in {"rdk_wsl_check", "rdk_wsl_setup", "rdk_wsl_compile", "rdk_board_check", "rdk_board_deploy"}:
+    elif action in {"rdk_wsl_install", "rdk_wsl_check", "rdk_wsl_setup", "rdk_wsl_remove", "rdk_wsl_compile", "rdk_board_check", "rdk_board_deploy"}:
         if not RDK_REMOTE_SCRIPT.is_file():
             raise ValueError(f"未找到 RDK X5 远程部署组件：{RDK_REMOTE_SCRIPT}")
         if action.startswith("rdk_wsl") and not values.get("rdk_wsl_distro", "").strip():
@@ -2969,7 +2972,7 @@ body.sidebar-collapsed .status{display:none}
 @media(max-width:700px){.pipeline{grid-template-columns:1fr 1fr}.dashboard-focus h3{font-size:20px}.train-primary-bar{bottom:0}.nav-group{display:none}.diagnostics{grid-template-columns:1fr}}
 @media(max-width:700px){.project-toolbar{grid-template-columns:1fr}.project-toolbar .mini{text-align:left}.project-card-menu{width:100%}.project-card-menu .btn{flex:1;text-align:center}.project-modal-panel{padding:17px}}
 .deployment-workflow{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px;margin-top:13px}.deployment-step{position:relative;display:grid;grid-template-columns:28px minmax(0,1fr);gap:9px;align-items:center;min-height:58px;padding:10px 12px;border:1px solid var(--line);border-radius:12px;background:#fafbfd}.deployment-step:not(:last-child):after{content:'›';position:absolute;right:-8px;z-index:2;color:#98a4b3;font-size:19px}.deployment-step span{display:grid;place-items:center;width:28px;height:28px;border-radius:9px;background:#edf3ff;color:#2f67ca;font-weight:800}.deployment-step b{font-size:12px;line-height:1.45}@media(max-width:850px){.deployment-workflow{grid-template-columns:1fr 1fr}.deployment-step:not(:last-child):after{display:none}}@media(max-width:520px){.deployment-workflow{grid-template-columns:1fr}}
-.rdk-remote-panel{margin-top:18px;padding:18px;border:1px solid #d9e5f7;border-radius:18px;background:linear-gradient(135deg,#f7faff,#fff)}.rdk-remote-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;flex-wrap:wrap}.rdk-remote-head h3{margin:0 0 5px}.rdk-node-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px}.rdk-node{padding:15px;border:1px solid var(--line);border-radius:15px;background:#fff}.rdk-node h4{margin:0 0 5px}.rdk-node .grid{margin-top:12px}@media(max-width:880px){.rdk-node-grid{grid-template-columns:1fr}}
+.rdk-remote-panel{margin-top:18px;padding:18px;border:1px solid #d9e5f7;border-radius:18px;background:linear-gradient(135deg,#f7faff,#fff)}.rdk-remote-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;flex-wrap:wrap}.rdk-remote-head h3{margin:0 0 5px}.rdk-env-box{margin-top:14px;padding:14px;border:1px solid #dbe5f1;border-radius:15px;background:#fff}.rdk-env-toolbar{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap}.rdk-env-toolbar h4{margin:0 0 4px}.rdk-env-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px;margin-top:12px}.rdk-env-item{min-height:82px;padding:11px;border:1px solid var(--line);border-radius:12px;background:#fafbfd}.rdk-env-item b{display:block;font-size:12px;margin:5px 0}.rdk-env-item span:last-child{display:block;color:var(--muted);font-size:11px;line-height:1.45;overflow-wrap:anywhere}.rdk-env-dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:#a8b1be}.rdk-env-item.ready .rdk-env-dot{background:#27a36a}.rdk-env-item.warning .rdk-env-dot{background:#d89020}.rdk-env-item.error .rdk-env-dot{background:#d84b4b}.rdk-env-summary{margin-top:10px;padding:9px 11px;border-radius:10px;background:#f4f7fb;color:#4b5868;font-size:12px}.rdk-node-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px}.rdk-node{padding:15px;border:1px solid var(--line);border-radius:15px;background:#fff}.rdk-node h4{margin:0 0 5px}.rdk-node .grid{margin-top:12px}@media(max-width:980px){.rdk-env-grid{grid-template-columns:1fr 1fr}}@media(max-width:880px){.rdk-node-grid{grid-template-columns:1fr}}@media(max-width:520px){.rdk-env-grid{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -3254,6 +3257,12 @@ body.sidebar-collapsed .status{display:none}
 
         <div class="rdk-remote-panel vendor-calibration-setting is-context-hidden">
           <div class="rdk-remote-head"><div><h3>RDK X5 一键编译与真机验证</h3><p class="hint">本机 WSL2 负责编译 Bayes-e `.bin`，官方系统板卡只负责加载、推理和性能验证。每一步共用上一步产物，不需要重复选择。</p></div><span class="asset-badge ok">WSL → SSH → BPU</span></div>
+          <div class="rdk-env-box">
+            <div class="rdk-env-toolbar"><div><h4>可选编译环境</h4><div class="mini">不使用 RDK X5 的成员无需安装。状态按 Windows WSL、Ubuntu、Python、RDK 工具链分层显示。</div></div><div class="btns"><button class="btn" onclick="loadRdkEnvironmentStatus(true)">刷新状态</button><button class="btn blue" id="rdk-wsl-install-button" onclick="runAction('rdk_wsl_install')">安装 WSL + Ubuntu</button><button class="btn red" id="rdk-wsl-remove-button" onclick="removeRdkToolchain()" disabled>移除 RDK 环境</button></div></div>
+            <div class="rdk-env-grid" id="rdk-env-grid"><div class="rdk-env-item"><span class="rdk-env-dot"></span><b>正在检查环境</b><span>请稍候…</span></div></div>
+            <div class="rdk-env-summary" id="rdk-env-summary">仅在选择 RDK X5 时检查，不影响其他成员训练和导出。</div>
+            <div class="mini" style="margin-top:8px">“移除 RDK 环境”只清理平台带标记的虚拟环境和编译缓存，不注销 Ubuntu，不删除训练数据或已生成的 `.bin`。</div>
+          </div>
           <div class="rdk-node-grid">
             <div class="rdk-node">
               <h4>① 本机 WSL 编译节点</h4><div class="mini">推荐 Ubuntu 22.04 / x86_64 / Python 3.10；工具链安装在隔离虚拟环境。</div>
@@ -3263,7 +3272,7 @@ body.sidebar-collapsed .status{display:none}
                 <div class="field full"><label>RDK X5 转换包</label><div class="input-action"><input id="rdk_bundle_dir" placeholder="生成转换包后自动填入"><button class="btn" onclick="pickRdkBundleDir()">选择</button></div></div>
                 <div class="field full"><label>编译完成的 `.bin`</label><div class="input-action"><input id="rdk_bin_path" placeholder="WSL 编译成功后自动填入"><button class="btn" onclick="pickRdkBin()">选择</button></div></div>
               </div>
-              <div class="actions"><div class="btns"><button class="btn" onclick="runAction('rdk_wsl_check')">检查 WSL</button><button class="btn" onclick="runAction('rdk_wsl_setup')">配置编译环境</button></div><button class="btn blue" onclick="runAction('rdk_wsl_compile')">编译 `.bin`</button></div>
+              <div class="actions"><div class="btns"><button class="btn" onclick="runAction('rdk_wsl_check')">详细检查</button><button class="btn" id="rdk-wsl-setup-button" onclick="runAction('rdk_wsl_setup')">配置编译环境</button></div><button class="btn blue" onclick="runAction('rdk_wsl_compile')">编译 `.bin`</button></div>
             </div>
             <div class="rdk-node">
               <h4>② RDK X5 真机</h4><div class="mini">使用 SSH 密钥和主机指纹；默认不保存密码、不要求 root。</div>
@@ -3502,6 +3511,8 @@ let resourceEstimateTimer=null;
 let lastResourceEstimateKey='';
 let deleteConfirmUntil=0;
 let panelRuntimeState={running:false,job:'',exit_code:null};
+let rdkEnvironmentLastJob='';
+let rdkEnvironmentStatusLoading=false;
 let commandSelection=0;
 let systemDiagnostics=null;
 let trainCheckTimer=null;
@@ -3596,6 +3607,26 @@ function updateTrainProgress(p){p=p||{}; const task=p.task||document.querySelect
 function updatePreparedDatasetUI(){const active=!!String(values.prepared_dataset_yaml||'').trim(); const banner=document.getElementById('prepared-dataset-banner'); const annotations=document.getElementById('annotations-field'); const split=document.getElementById('train_ratio_percent')?.closest('.field'); if(banner){banner.hidden=!active; banner.innerHTML=active?`<div class="check-item ok"><span class="check-icon">✓</span><b>已直接导入 YOLO 数据集</b><span class="check-detail">${values.prepared_dataset_yaml}；沿用原 train / valid / test，不需要 XML，也不会重新随机划分。</span></div>`:''} if(annotations) annotations.hidden=active||(document.querySelector('input[name="train_task"]:checked')?.value||'detect')==='classify'; if(split) split.hidden=active}
 function updateTrainTaskUI(){const task=document.querySelector('input[name="train_task"]:checked')?.value||'detect'; const annotations=document.getElementById('annotations-field'); const hint=document.getElementById('train-task-hint'); const prepared=!!String(values.prepared_dataset_yaml||'').trim(); if(annotations) annotations.hidden=task==='classify'||prepared; if(hint) hint.textContent=task==='classify'?'分类数据集结构：Images Dir/类别名/图片。启用测试集时每个类别至少 3 张图片；Annotations Dir 不参与分类训练；Base Model 请使用分类权重，例如 yolo11n-cls.pt。':prepared?'已导入标准 YOLO 数据集，将直接使用 TXT 标签和原始 train/valid/test 划分。':'检测数据集结构：可直接导入 data.yaml 数据集，或使用同名图片 + VOC XML。启用测试集时至少需要 3 对有效样本。'; updatePreparedDatasetUI()}
 async function loadDeviceProfiles(){try{const r=await fetch('/api/device-profiles'); const j=await r.json(); deploymentProfiles=j.items||[]; updateDeploymentProfile()}catch(e){}}
+function renderRdkEnvironmentStatus(status){
+  const grid=document.getElementById('rdk-env-grid'),summary=document.getElementById('rdk-env-summary');
+  if(grid){grid.innerHTML=(status.components||[]).map(item=>{const style=item.status==='ready'?'ready':item.status==='warning'?'warning':item.status==='error'?'error':'';return `<div class="rdk-env-item ${style}"><span class="rdk-env-dot"></span><b>${escapeHtml(item.label)}</b><span>${escapeHtml(item.detail)}</span></div>`}).join('')||'<div class="rdk-env-item error"><span class="rdk-env-dot"></span><b>无法读取状态</b><span>请查看运行日志。</span></div>'}
+  if(summary)summary.textContent=status.summary||'环境状态未知。';
+  const install=document.getElementById('rdk-wsl-install-button'),setup=document.getElementById('rdk-wsl-setup-button'),remove=document.getElementById('rdk-wsl-remove-button');
+  if(install){install.disabled=!status.can_install;install.textContent=status.restart_required?'安装已提交，请重启':'安装 WSL + Ubuntu'}
+  if(setup){setup.disabled=!status.can_setup;setup.textContent=status.overall==='ready'?'修复 / 更新编译环境':'配置编译环境'}
+  if(remove)remove.disabled=!status.can_remove;
+}
+async function loadRdkEnvironmentStatus(showMessage=false){
+  if(rdkEnvironmentStatusLoading)return;
+  rdkEnvironmentStatusLoading=true;
+  try{const status=await api('/api/rdk-environment-status',{values:collect()});renderRdkEnvironmentStatus(status);if(showMessage)toast(status.summary||'环境状态已刷新')}
+  catch(error){renderRdkEnvironmentStatus({overall:'error',summary:error.message,components:[{label:'环境检查失败',status:'error',detail:error.message}]});if(showMessage)toast(error.message)}
+  finally{rdkEnvironmentStatusLoading=false}
+}
+function removeRdkToolchain(){
+  const message='只会删除平台专用 RDK 工具链和编译缓存。Ubuntu、其他 Linux 文件、训练数据和已生成的 .bin 都会保留。\n\n确定继续吗？';
+  if(confirm(message))runAction('rdk_wsl_remove');
+}
 function updateDeploymentProfile(){const target=document.getElementById('deployment_target')?.value||values.deployment_target||'generic_onnx';const profile=deploymentProfiles.find(item=>item.id===target);if(!profile){updateExportOptionsUI();return}const targetChanged=deploymentProfileLastTarget!==target;deploymentProfileLastTarget=target;if(targetChanged&&profile.recommended_input?.length===2){setInputValue('export_img_height',String(profile.recommended_input[0]));setInputValue('export_img_width',String(profile.recommended_input[1]))}const format=document.getElementById('export_format');if(format){for(const option of format.options)option.disabled=option.value!=='auto'&&!profile.formats.includes(option.value);if(format.selectedOptions[0]?.disabled)format.value='auto'}const chip=document.getElementById('export_chip');if(chip){const chips=profile.chips||[];chip.placeholder=chips.length?`可选：${chips.join('、')}；默认 ${profile.default_chip||chips[0]}`:'该平台不需要填写';if(chips.length&&!chips.includes(chip.value.trim().toLowerCase()))chip.value=profile.default_chip||chips[0];if(!chips.length)chip.value=''}const vendorPTQ=!!profile.vendor_ptq;document.querySelectorAll('.vendor-calibration-setting').forEach(el=>el.classList.toggle('is-context-hidden',!vendorPTQ));const calibration=document.getElementById('deployment_calibration_dir');if(vendorPTQ&&calibration&&!calibration.value.trim()&&String(values.train_images_dir||'').trim()){calibration.value=values.train_images_dir;values.deployment_calibration_dir=values.train_images_dir}const int8=document.getElementById('export_int8');if(int8){if(profile.forced_int8)int8.checked=true;else if(int8.disabled)int8.checked=false;int8.disabled=!!profile.forced_int8}const finalArtifact=profile.final_artifact||String(profile.recommended_format).toUpperCase();const runtime=profile.runtime||'目标平台运行时';const box=document.getElementById('deployment-profile-note');if(box)box.innerHTML=`<div class="check-item ok"><span class="check-icon">✓</span><b>最终产物：${escapeHtml(finalArtifact)}</b><span class="check-detail">${escapeHtml(profile.summary)}</span></div><div class="check-item ${profile.vendor_toolchain?'warn':'ok'}"><span class="check-icon">${profile.vendor_toolchain?'!':'✓'}</span><b>${profile.vendor_toolchain?'需要厂商转换步骤':'可直接导出并验证'}</b><span class="check-detail">运行时：${escapeHtml(runtime)}。${escapeHtml(profile.next_step)}</span></div>`;const workflow=document.getElementById('deployment-workflow');if(workflow){workflow.innerHTML=(profile.workflow||[]).map((step,index)=>`<div class="deployment-step"><span>${index+1}</span><b>${escapeHtml(step)}</b></div>`).join('')}updateExportOptionsUI()}
 function applyDeploymentTrainingPreset(){const target=document.getElementById('deployment_target')?.value||values.deployment_target;const profile=deploymentProfiles.find(item=>item.id===target);if(!profile)return;const size=profile.recommended_input||[];if(size.length===2){setInputValue('img_height',String(size[0]));setInputValue('img_width',String(size[1]))}if(profile.recommended_model){const task=document.querySelector('input[name="train_task"]:checked')?.value||'detect';const model=task==='classify'?String(profile.recommended_model).replace(/\.pt$/,'-cls.pt'):profile.recommended_model;setInputValue('base_model',model)}if(profile.vendor_ptq&&!String(values.deployment_calibration_dir||'').trim()&&String(values.train_images_dir||'').trim())setInputValue('deployment_calibration_dir',values.train_images_dir);saveValues();updateCommands();scheduleResourceEstimate();scheduleTrainReadiness(120);showTab('train');toast(`已带入 ${profile.label} 的起步建议；已有模型不会被自动重训`)}
 function useTrainingImagesForCalibration(){const source=String(values.train_images_dir||document.getElementById('train_images_dir')?.value||'').trim();if(!source){toast('训练图片目录还没有填写');return}setInputValue('deployment_calibration_dir',source);saveValues();updateCommands();toast('已使用训练图片作为 PTQ 校准来源')}
@@ -3705,11 +3736,12 @@ async function loadTrainPlots(){try{const r=await fetch('/api/train-plots'); con
 function scheduleLabelResultsRefresh(){clearTimeout(labelResultsTimer); labelResultsTimer=setTimeout(()=>loadLabelResults(),350)}
 async function refreshState(){try{const r=await fetch('/api/state'); if(!r.ok) throw new Error(`HTTP ${r.status}`); const s=await r.json(); panelRuntimeState=s;setConnectionState(true); apply(s.values||{}); updateTrainProgress(s.train_progress||{});const stopButton=document.getElementById('stop-train-button');if(stopButton)stopButton.hidden=!(s.running&&s.job==='train');const startButton=document.getElementById('start-train-button');if(startButton)startButton.hidden=!!(s.running&&s.job==='train'); const log=document.getElementById('log'); log.textContent=(s.logs||[]).join(''); log.scrollTop=log.scrollHeight; const pill=document.getElementById('runPill'); pill.className='pill '+(s.running?'run':'idle'); pill.querySelector('span:last-child').textContent=s.running?'运行中':'空闲'; const jobNames={train:'模型训练',model_download:'基础模型下载',export:'多平台导出',convert:'MaixCAM 专用转换',test:'模型测试',label:'实验自动跟踪标注',annotation_personal:'启动个人标注中心',annotation_share:'开启局域网协作标注',annotation_stop:'停止协作标注中心',train_ssh:'训练 SSH 检查',vm_ssh:'转换 SSH 检查',rdk_wsl_check:'RDK X5 WSL 检查',rdk_wsl_setup:'RDK X5 编译环境配置',rdk_wsl_compile:'RDK X5 模型编译',rdk_board_check:'RDK X5 板卡检查',rdk_board_deploy:'RDK X5 真机部署验证'}; document.getElementById('jobInfo').textContent=s.job?`${jobNames[s.job]||s.job} · 开始 ${s.started_at||'-'}${s.finished_at?' · 结束 '+s.finished_at:''}${s.exit_code!==null&&s.exit_code!==undefined?' · 退出码 '+s.exit_code:''}`:'暂无任务';if(s.job==='model_download'&&s.running)modelDownloadWasRunning=true;if(modelDownloadWasRunning&&s.job==='model_download'&&!s.running){modelDownloadWasRunning=false;loadBaseModels();if(Number(s.exit_code)===0)toast('基础模型下载完成，已设为当前训练模型')} const errorBox=document.getElementById('lastError'); const failed=!s.running&&s.job&&s.exit_code!==null&&Number(s.exit_code)!==0; if(s.last_error||failed){errorBox.hidden=false; errorBox.textContent=s.last_error||`上次任务失败（退出码 ${s.exit_code}），请打开“运行日志”查看具体原因。`}else errorBox.hidden=true; const box=document.getElementById('markers'); box.innerHTML=''; for(const [k,v] of Object.entries(s.markers||{})){const div=document.createElement('div'); div.className='marker'; div.innerHTML=`<b>${k}</b><span>${v}</span>`; box.appendChild(div)}renderDashboard()}catch(e){setConnectionState(false); const pill=document.getElementById('runPill'); if(pill){pill.className='pill idle';pill.querySelector('span:last-child').textContent='未连接'} const errorBox=document.getElementById('lastError'); if(errorBox){errorBox.hidden=false;errorBox.textContent='训练面板未运行。请双击 start_train_panel.cmd，然后刷新此页面。'}}}
 function copyLogs(){navigator.clipboard.writeText(document.getElementById('log').textContent);toast('日志已复制')}
-function showTab(name){if(name==='label'&&!document.body.classList.contains('show-experimental'))name='overview';const target=document.getElementById('tab-'+name); if(!target) name='overview'; document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));document.getElementById('tab-'+name).classList.add('active');let activeButton=null;document.querySelectorAll('.nav button[data-tab]').forEach(x=>{const active=x.dataset.tab===name;x.classList.toggle('active',active);if(active){x.setAttribute('aria-current','page');activeButton=x}else x.removeAttribute('aria-current')});const pageTitle=document.querySelector('#tab-'+name+'>h2')?.textContent?.trim();document.title=pageTitle?`${pageTitle} · YOLO团队训练平台`:'YOLO团队训练平台';localStorage.setItem('yoloTeamPlatformTab',name);window.scrollTo({top:0,behavior:'auto'});requestAnimationFrame(()=>{if(activeButton&&matchMedia('(max-width:980px)').matches)activeButton.scrollIntoView({block:'nearest',inline:'center',behavior:'smooth'})});if(name==='overview')refreshDashboard();if(name==='projects') loadProjects();if(name==='train')scheduleTrainReadiness(80);if(name==='models') loadBaseModels(); if(name==='label') loadLabelResults(); if(name==='assets') loadModelAssets(); if(name==='collab') loadAnnotationService()}
+function showTab(name){if(name==='label'&&!document.body.classList.contains('show-experimental'))name='overview';const target=document.getElementById('tab-'+name); if(!target) name='overview'; document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));document.getElementById('tab-'+name).classList.add('active');let activeButton=null;document.querySelectorAll('.nav button[data-tab]').forEach(x=>{const active=x.dataset.tab===name;x.classList.toggle('active',active);if(active){x.setAttribute('aria-current','page');activeButton=x}else x.removeAttribute('aria-current')});const pageTitle=document.querySelector('#tab-'+name+'>h2')?.textContent?.trim();document.title=pageTitle?`${pageTitle} · YOLO团队训练平台`:'YOLO团队训练平台';localStorage.setItem('yoloTeamPlatformTab',name);window.scrollTo({top:0,behavior:'auto'});requestAnimationFrame(()=>{if(activeButton&&matchMedia('(max-width:980px)').matches)activeButton.scrollIntoView({block:'nearest',inline:'center',behavior:'smooth'})});if(name==='overview')refreshDashboard();if(name==='projects') loadProjects();if(name==='train')scheduleTrainReadiness(80);if(name==='models') loadBaseModels(); if(name==='label') loadLabelResults(); if(name==='assets') loadModelAssets(); if(name==='collab') loadAnnotationService();if(name==='convert'&&document.getElementById('deployment_target')?.value==='drobotics_rdk_x5')loadRdkEnvironmentStatus()}
 function enhanceFormAccessibility(){let index=0;document.querySelectorAll('.field').forEach(field=>{const label=field.querySelector(':scope > label');const control=field.querySelector(':scope > input, :scope > select, :scope > .input-action input, :scope > .input-action select');if(!label||!control)return;if(!control.id)control.id=`field-control-${++index}`;if(!label.htmlFor)label.htmlFor=control.id});document.querySelectorAll('button').forEach(button=>{if(!button.getAttribute('type'))button.setAttribute('type','button')})}
 
 document.querySelectorAll('.nav button[data-tab]').forEach(b=>b.onclick=()=>showTab(b.dataset.tab));
 document.querySelectorAll('input,select').forEach(el=>{const handler=()=>{if(el.id==='label_prefix') rawLabelPrefix.manual=true; if((el.id==='train_images_dir'||el.id==='train_annotations_dir')&&String(values.prepared_dataset_yaml||'').trim()){setInputValue('prepared_dataset_yaml',''); updatePreparedDatasetUI()} if(el.name==='train_task') updateTrainTaskUI(); if(el.name==='label_source_type') updateLabelSourceUI();if(el.name==='test_source')updateTestSourceUI();if(el.id==='export_int8')updateExportOptionsUI(); if(el.id==='train_ratio_percent'||el.id==='val_ratio_percent')updateSplitRatio(el.id); collect(); updateCurrentVideo(); saveValues(); updateCommands(); const trainingField=['dataset_root','train_images_dir','train_annotations_dir','prepared_dataset_yaml','base_model','img_width','img_height','image_resize_mode','batch','train_cache','torch_cuda','conda_env','train_ratio_percent','val_ratio_percent'].includes(el.id)||el.name==='train_device'||el.name==='train_task'||el.name==='train_mode';if(trainingField){scheduleResourceEstimate();scheduleTrainReadiness()} if(['label_images_dir','label_annotations_dir','label_annotations_dir_images','label_images_input_dir'].includes(el.id)) scheduleLabelResultsRefresh()}; el.addEventListener('input',handler); el.addEventListener('change',handler)});
+document.getElementById('deployment_target')?.addEventListener('change',()=>{if(document.getElementById('deployment_target')?.value==='drobotics_rdk_x5')setTimeout(()=>loadRdkEnvironmentStatus(),0)});
 window.addEventListener('keydown',event=>{const palette=document.getElementById('command-palette'),openProjectModal=document.querySelector('.project-modal:not([hidden])');if(event.key==='Escape'&&openProjectModal){event.preventDefault();openProjectModal.hidden=true;return}if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='k'){event.preventDefault();openCommandPalette();return}if(palette?.hidden)return;if(event.key==='Escape'){event.preventDefault();closeCommandPalette();return}const items=commandMatches();if(event.key==='ArrowDown'||event.key==='ArrowUp'){event.preventDefault();commandSelection=(commandSelection+(event.key==='ArrowDown'?1:-1)+items.length)%Math.max(1,items.length);renderCommandPalette();return}if(event.key==='Enter'&&items.length){event.preventDefault();const target=items[commandSelection];closeCommandPalette();showTab(target.page)}});
 if(localStorage.getItem('yoloTeamPlatformAdvanced')==='1'){document.body.classList.add('show-advanced');setText('advanced-toggle','收起更多设置')}
 toggleExperimentalFeatures(localStorage.getItem('yoloTeamPlatformExperimental')==='1');
@@ -3722,6 +3754,7 @@ updateExportOptionsUI();
 loadDeviceProfiles();
 loadProjects();
 refreshState(); setInterval(refreshState,1400);
+setInterval(()=>{const state=panelRuntimeState||{};if(String(state.job||'').startsWith('rdk_wsl_')&&!state.running&&state.finished_at){const key=`${state.job}|${state.finished_at}|${state.exit_code}`;if(key!==rdkEnvironmentLastJob){rdkEnvironmentLastJob=key;loadRdkEnvironmentStatus()}}},1600);
 
 
 
@@ -4297,6 +4330,10 @@ class PanelHandler(BaseHTTPRequestHandler):
 
 
 
+            if self.path == "/api/rdk-environment-status":
+                values = clean_values(body.get("values"))
+                self.send_json(inspect_wsl_environment(values["rdk_wsl_distro"], values["rdk_wsl_venv"]))
+                return
             if self.path == "/api/run":
                 action = str(body.get("action", ""))
                 values = clean_values(body.get("values"))

@@ -37,6 +37,7 @@ MODEL_ZOO_BRANCH = "rdk_x5"
 SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
 SAFE_HOST = re.compile(r"^[A-Za-z0-9._-]+$")
 SAFE_LINUX_PATH = re.compile(r"^(?:~(?:/[A-Za-z0-9._-]+)+|/[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*)$")
+TOOLCHAIN_MARKER = ".yolo-team-rdk-toolchain"
 
 
 def _require_program(name: str) -> str:
@@ -111,26 +112,176 @@ def _run_stream(command: list[str], input_text: str = "") -> None:
 
 
 def _capture(command: list[str]) -> str:
-    completed = subprocess.run(
-        command,
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        encoding="utf-8",
-        errors="replace",
-    )
+    child_env = os.environ.copy()
+    if Path(command[0]).name.lower() in {"wsl", "wsl.exe"}:
+        child_env["WSL_UTF8"] = "1"
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=child_env,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("命令检查超时，请确认 WSL/SSH 没有等待首次初始化或交互输入。") from exc
+    stdout_encoding = "utf-16-le" if b"\x00" in completed.stdout else "utf-8"
+    stderr_encoding = "utf-16-le" if b"\x00" in completed.stderr else "utf-8"
+    stdout = completed.stdout.decode(stdout_encoding, errors="replace").replace("\x00", "")
+    stderr = completed.stderr.decode(stderr_encoding, errors="replace").replace("\x00", "")
     if completed.returncode:
-        detail = (completed.stderr or completed.stdout).strip()
+        detail = (stderr or stdout).strip()
         raise RuntimeError(detail or f"命令执行失败，退出码 {completed.returncode}。")
-    return completed.stdout.strip().replace("\x00", "")
+    return stdout.strip()
 
 
-def build_wsl_command(distro: str) -> list[str]:
-    return ["wsl.exe", "-d", _safe_name(distro, "WSL 发行版"), "--", "bash", "-s"]
+def build_wsl_command(distro: str, user: str = "") -> list[str]:
+    command = ["wsl.exe", "-d", _safe_name(distro, "WSL 发行版")]
+    if user:
+        command += ["-u", _safe_name(user, "WSL 用户名")]
+    return [*command, "--", "bash", "-s"]
 
 
-def _run_wsl_stream(distro: str, shell_code: str) -> None:
-    _run_stream(build_wsl_command(distro), shell_code)
+def _run_wsl_stream(distro: str, shell_code: str, user: str = "") -> None:
+    _run_stream(build_wsl_command(distro, user), shell_code)
+
+
+def _capture_wsl(distro: str, shell_code: str, user: str = "") -> str:
+    _require_program("wsl.exe")
+    command = build_wsl_command(distro, user)
+    child_env = os.environ.copy()
+    child_env["WSL_UTF8"] = "1"
+    try:
+        completed = subprocess.run(
+            command,
+            input=shell_code.encode("utf-8"),
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=child_env,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("WSL 状态检查超时；首次安装后请先重启 Windows，再返回平台继续配置。") from exc
+    stdout = completed.stdout.decode("utf-8", errors="replace").replace("\x00", "").strip()
+    stderr_encoding = "utf-16-le" if b"\x00" in completed.stderr else "utf-8"
+    stderr = completed.stderr.decode(stderr_encoding, errors="replace").replace("\x00", "").strip()
+    if completed.returncode != 0:
+        detail = stderr or stdout or "没有输出"
+        raise RuntimeError(f"命令失败（退出码 {completed.returncode}）：{detail}")
+    return stdout
+
+
+def installed_wsl_distros() -> list[str]:
+    program = shutil.which("wsl.exe")
+    if not program:
+        return []
+    try:
+        output = _capture([program, "--list", "--quiet"])
+    except RuntimeError:
+        return []
+    return [line.strip() for line in output.splitlines() if line.strip()]
+
+
+def inspect_wsl_environment(distro: str = DEFAULT_DISTRO, venv: str = DEFAULT_VENV) -> dict[str, Any]:
+    distro = _safe_name(distro, "WSL 发行版")
+    _safe_linux_path(venv, "WSL 工具链目录")
+    program = shutil.which("wsl.exe")
+    components = [
+        {"id": "wsl", "label": "Windows WSL", "status": "missing", "detail": "尚未安装"},
+        {"id": "distro", "label": distro, "status": "missing", "detail": "尚未安装"},
+        {"id": "python", "label": "Python 3.10", "status": "missing", "detail": "等待 Ubuntu"},
+        {"id": "toolchain", "label": "RDK X5 编译工具链", "status": "missing", "detail": "尚未配置"},
+    ]
+    result: dict[str, Any] = {
+        "overall": "not_installed",
+        "summary": "尚未安装 WSL；仅在需要编译 RDK X5 模型时安装。",
+        "components": components,
+        "distro": distro,
+        "venv": venv,
+        "can_install": True,
+        "can_setup": False,
+        "can_remove": False,
+        "restart_required": False,
+    }
+    if not program:
+        return result
+
+    try:
+        try:
+            version_output = _capture([program, "--version"])
+        except RuntimeError:
+            version_output = _capture([program, "--status"])
+        version = next((line.strip() for line in version_output.splitlines() if line.strip()), "WSL 命令可用")
+    except RuntimeError as exc:
+        components[0].update(status="error", detail=str(exc))
+        result.update(overall="error", summary="WSL 命令存在，但 Windows 组件尚未就绪。")
+        return result
+
+    components[0].update(status="ready", detail=version)
+    distros = installed_wsl_distros()
+    result["installed_distros"] = distros
+    if distro.lower() not in {item.lower() for item in distros}:
+        result.update(
+            overall="needs_distro",
+            summary=f"WSL 已可用；安装 {distro} 后即可配置 RDK 工具链。",
+            can_install=True,
+        )
+        return result
+
+    components[1].update(status="ready", detail="已安装，可由平台按需启动")
+    result["can_install"] = False
+    result["can_setup"] = True
+    venv_line = _linux_assignment("VENV", venv, "WSL 工具链目录")
+    probe = f'''set -eu
+{venv_line}
+echo "ARCH=$(uname -m)"
+echo "SYSTEM=$(grep '^PRETTY_NAME=' /etc/os-release | cut -d= -f2- | tr -d '\"')"
+echo "PYTHON=$(python3 --version 2>&1 || true)"
+if python3 -c 'import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 10) else 1)' 2>/dev/null; then echo "PYTHON_OK=1"; else echo "PYTHON_OK=0"; fi
+if [ -x "$VENV/bin/hb_mapper" ] && [ -f "$VENV/{TOOLCHAIN_MARKER}" ]; then
+  echo "TOOLCHAIN_OK=1"
+  echo "MAPPER=$($VENV/bin/hb_mapper --version 2>&1 | head -n 1)"
+  echo "SIZE=$(du -sh "$VENV" 2>/dev/null | awk '{{print $1}}')"
+else
+  echo "TOOLCHAIN_OK=0"
+fi
+echo "FREE=$(df -h / | tail -n 1 | awk '{{print $4}}')"'''
+    try:
+        output = _capture_wsl(distro, probe)
+    except RuntimeError as exc:
+        components[1].update(status="error", detail=str(exc))
+        result.update(overall="error", summary=f"{distro} 已安装，但当前无法启动。")
+        return result
+    facts = dict(line.split("=", 1) for line in output.splitlines() if "=" in line)
+    result["facts"] = facts
+    architecture = facts.get("ARCH", "未知架构")
+    system_name = facts.get("SYSTEM", distro)
+    components[1]["detail"] = f"{system_name} · {architecture} · 根目录剩余 {facts.get('FREE', '?')}"
+    if architecture != "x86_64":
+        components[1].update(status="error")
+        result.update(overall="error", summary="RDK X5 编译环境要求 x86_64 WSL。")
+        return result
+    python_ok = facts.get("PYTHON_OK") == "1"
+    components[2].update(
+        status="ready" if python_ok else "warning",
+        detail=facts.get("PYTHON", "未找到 Python 3.10"),
+    )
+    toolchain_ok = facts.get("TOOLCHAIN_OK") == "1"
+    if toolchain_ok:
+        mapper = facts.get("MAPPER", "hb_mapper 已安装")
+        size = facts.get("SIZE", "未知大小")
+        components[3].update(status="ready", detail=f"{mapper} · 占用 {size}")
+        result.update(
+            overall="ready",
+            summary="RDK X5 编译环境已就绪，可以直接编译 Bayes-e .bin。",
+            can_remove=True,
+        )
+    else:
+        components[3]["detail"] = "未配置或缺少平台标记；点击“配置编译环境”安装"
+        result.update(overall="needs_setup", summary="Ubuntu 已就绪；还需要配置平台专用 RDK 工具链。")
+    return result
 
 
 def _wsl_path(distro: str, windows_path: Path) -> str:
@@ -160,6 +311,52 @@ echo "RDK_WSL_READY=1"'''
     return shell
 
 
+def install_wsl_distro(distro: str, venv: str = DEFAULT_VENV) -> dict[str, Any]:
+    distro = _safe_name(distro, "WSL 发行版")
+    program = _require_program("wsl.exe")
+    if distro.lower() in {item.lower() for item in installed_wsl_distros()}:
+        print(f"{distro} 已安装，跳过重复安装。", flush=True)
+        print("RDK_WSL_INSTALL=ready", flush=True)
+        return inspect_wsl_environment(distro, venv)
+
+    print(f"准备安装可选组件：WSL2 + {distro}。Windows 可能显示管理员授权窗口。", flush=True)
+    arguments = ["--install", "--distribution", distro, "--no-launch"]
+    if os.name == "nt":
+        powershell = _require_program("powershell.exe")
+        quoted_program = program.replace("'", "''")
+        quoted_args = ",".join("'" + item.replace("'", "''") + "'" for item in arguments)
+        script = (
+            f"$arguments=@({quoted_args});"
+            f"$process=Start-Process -FilePath '{quoted_program}' -ArgumentList $arguments "
+            "-Verb RunAs -Wait -PassThru -WindowStyle Hidden; exit $process.ExitCode"
+        )
+        _run_stream([powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script])
+    else:
+        _run_stream([program, *arguments])
+
+    status = inspect_wsl_environment(distro, venv)
+    if status.get("overall") in {"needs_setup", "ready"}:
+        print("RDK_WSL_INSTALL=installed", flush=True)
+    else:
+        status["restart_required"] = True
+        status["summary"] = "Windows 已接受 WSL 安装；请重启电脑后返回此页面继续配置。"
+        print("RDK_WSL_INSTALL=reboot_required", flush=True)
+    return status
+
+
+def wsl_prerequisite_script() -> str:
+    return '''set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+if python3 -c 'import venv' >/dev/null 2>&1 && command -v git >/dev/null 2>&1; then
+  echo "WSL 基础组件已就绪"
+  exit 0
+fi
+command -v apt-get >/dev/null 2>&1 || { echo "当前发行版不支持 apt-get；请使用 Ubuntu 22.04" >&2; exit 1; }
+apt-get update
+apt-get install -y python3-venv git ca-certificates
+echo "WSL 基础组件安装完成"'''
+
+
 def wsl_setup_script(venv: str) -> str:
     venv_line = _linux_assignment("VENV", venv, "WSL 工具链目录")
     shell = f'''set -euo pipefail
@@ -178,9 +375,33 @@ fi
 "$VENV/bin/python" -m pip install --no-deps "ultralytics==8.4.120"
 "$VENV/bin/hb_mapper" --version
 "$VENV/bin/python" -c 'import cv2, numpy, onnx, onnxruntime, pkg_resources, torch, ultralytics; from ultralytics.nn.modules.block import AAttn; print(f"RDK 编译环境：torch={{torch.__version__}} ultralytics={{ultralytics.__version__}} numpy={{numpy.__version__}} opencv={{cv2.__version__}} onnx={{onnx.__version__}} onnxruntime={{onnxruntime.__version__}}")'
+printf 'managed_by=yolo-team-training-platform\ncomponent=rdk-x5-toolchain\n' > "$VENV/{TOOLCHAIN_MARKER}"
 echo "RDK_WSL_TOOLCHAIN=ready"
 echo "RDK_WSL_READY=1"'''
     return shell
+
+
+def wsl_remove_script(venv: str) -> str:
+    venv_line = _linux_assignment("VENV", venv, "WSL 工具链目录")
+    return f'''set -euo pipefail
+{venv_line}
+HOME_REAL="$(realpath -m "$HOME")"
+VENV_REAL="$(realpath -m "$VENV")"
+case "$VENV_REAL" in "$HOME_REAL"/*) ;; *) echo "拒绝移除用户目录之外的工具链：$VENV_REAL" >&2; exit 1;; esac
+test -f "$VENV_REAL/{TOOLCHAIN_MARKER}" || {{ echo "目录缺少平台管理标记，拒绝删除：$VENV_REAL" >&2; exit 1; }}
+CACHE_ROOT="$HOME_REAL/.cache/yolo-team-training-platform"
+rm -rf -- "$VENV_REAL"
+rm -rf -- "$CACHE_ROOT/rdk-model-zoo-x5" "$CACHE_ROOT/rdk-jobs"
+rmdir "$CACHE_ROOT" 2>/dev/null || true
+echo "已移除平台专用 RDK X5 工具链与编译缓存。"
+echo "RDK_WSL_TOOLCHAIN=removed"'''
+
+
+def remove_wsl_toolchain(distro: str, venv: str) -> None:
+    _require_program("wsl.exe")
+    if _safe_name(distro, "WSL 发行版").lower() not in {item.lower() for item in installed_wsl_distros()}:
+        raise RuntimeError(f"未安装 WSL 发行版 {distro}，没有可移除的平台工具链。")
+    _run_wsl_stream(distro, wsl_remove_script(venv))
 
 
 def _find_manifest(bundle: Path) -> Optional[Path]:
@@ -398,7 +619,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="YOLO团队训练平台 RDK X5 WSL/SSH deployment helper")
     sub = parser.add_subparsers(dest="action", required=True)
 
-    for name in ("wsl-check", "wsl-setup"):
+    for name in ("wsl-status", "wsl-install", "wsl-check", "wsl-setup", "wsl-remove"):
         item = sub.add_parser(name)
         item.add_argument("--distro", default=DEFAULT_DISTRO)
         item.add_argument("--venv", default=DEFAULT_VENV)
@@ -429,12 +650,19 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
-    if args.action == "wsl-check":
+    if args.action == "wsl-status":
+        print(json.dumps(inspect_wsl_environment(args.distro, args.venv), ensure_ascii=False, indent=2))
+    elif args.action == "wsl-install":
+        install_wsl_distro(args.distro, args.venv)
+    elif args.action == "wsl-check":
         _require_program("wsl.exe")
         _run_wsl_stream(args.distro, wsl_probe_script(args.venv))
     elif args.action == "wsl-setup":
         _require_program("wsl.exe")
+        _run_wsl_stream(args.distro, wsl_prerequisite_script(), user="root")
         _run_wsl_stream(args.distro, wsl_setup_script(args.venv))
+    elif args.action == "wsl-remove":
+        remove_wsl_toolchain(args.distro, args.venv)
     elif args.action == "wsl-compile":
         compile_bundle(args.bundle, args.distro, args.venv)
     elif args.action == "board-check":

@@ -16,7 +16,7 @@ cd yolo-train-tool
 普通队友直接双击发布页中的安装器：
 
 ```text
-YOLO-Team-Training-Platform-Setup-v3.2.14-beta.exe
+YOLO-Team-Training-Platform-Setup-v3.2.15-beta.exe
 ```
 
 安装器会自动：
@@ -36,6 +36,8 @@ YOLO-Team-Training-Platform-Setup-v3.2.14-beta.exe
 打开后默认进入“工作台总览”。平台按“项目 → 数据 → 训练 → 验证 → 部署”显示当前进度并给出下一步。按 `Ctrl+K` 可快速查找页面；自动跟踪标注等实验能力默认隐藏，可在左侧导航底部主动开启。
 
 “项目中心”支持搜索、数据状态筛选、编辑、复制配置和删除。点击删除时，默认只把项目从列表移除，不动数据、训练模型和导出产物；只有主动勾选“同时删除平台托管的项目数据”并输入完整项目名称后，平台才会删除该项目的专用托管目录。外部关联的数据集始终不会由项目删除功能处理。
+
+需要部署 RDK X5 时，在“部署与导出”选择“地瓜机器人 RDK X5”。“可选编译环境”会显示 Windows WSL、Ubuntu 22.04、Python 3.10 和 RDK Mapper 四层状态：缺少 WSL 时点击“安装 WSL + Ubuntu”，安装后按提示重启，再点击“配置编译环境”。不用 RDK X5 的成员可以完全跳过。移除时只清理平台专用工具链和缓存，保留 Ubuntu、其他 Linux 数据、训练数据和已生成 `.bin`。
 
 ## 3. Ubuntu 首次安装
 

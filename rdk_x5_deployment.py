@@ -135,6 +135,7 @@ if [ ! -x "$VENV/bin/python" ]; then python3 -m venv "$VENV"; fi
 "$VENV/bin/python" -m pip install --no-deps "ultralytics==8.4.120"
 "$VENV/bin/hb_mapper" --version
 "$VENV/bin/python" -c 'import cv2, numpy, onnx, onnxruntime, pkg_resources, torch, ultralytics; from ultralytics.nn.modules.block import AAttn; print(f"RDK 编译环境已就绪：torch={torch.__version__} ultralytics={ultralytics.__version__}")'
+printf 'managed_by=yolo-team-training-platform\ncomponent=rdk-x5-toolchain\n' > "$VENV/.yolo-team-rdk-toolchain"
 echo "请执行：source \"$VENV/bin/activate\""
 '''
 
