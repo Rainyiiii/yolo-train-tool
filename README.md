@@ -12,7 +12,7 @@ YOLO团队训练平台是一个面向 Windows、Ubuntu 和多种边缘部署平�
 
 ## 队友第一次使用
 
-1. 双击 `YOLO-Team-Training-Platform-Setup-v3.2.15-beta.exe`。
+1. 双击 `YOLO-Team-Training-Platform-Setup-v3.2.16-beta.exe`。
 2. 保持默认安装目录 `D:\YOLOTeamTrainingPlatform`，点击安装。
 3. 安装器自动准备 .NET、WebView2、Python、PyTorch、ONNX Runtime 和平台依赖。
 4. 安装完成后从桌面打开“YOLO团队训练平台”。
@@ -64,7 +64,7 @@ Ubuntu 上访问：<http://127.0.0.1:8989/>。如果要从其他电脑访问，�
 维护者运行 `installer/windows/build-installer.ps1`，程序会在 `dist` 文件夹生成：
 
 ```text
-YOLO-Team-Training-Platform-Setup-v3.2.15-beta.exe
+YOLO-Team-Training-Platform-Setup-v3.2.16-beta.exe
 ```
 
 安装器不会打包本机 Workspace、私人路径、训练数据、日志和训练结果。
@@ -107,7 +107,7 @@ WebView2 只是桌面承载层，不复制训练逻辑；桌面应用与浏览�
 
 ### 1. 准备数据
 
-不再强制依赖 Roboflow。“项目中心”的目标检测项目会自动同步到个人/团队标注中心；选择类别、拖动画框，再点击“完成并下一张”即可。团队成员可以直接从公共队列自动领取下一张，不必预先分配；审核默认关闭，需要双人复核时再按项目开启。“项目与团队”默认只展示当前项目和高频流程，成员、任务、导出及危险操作按需展开。管理员可以通过完整名称确认删除协作标注副本，操作不会连带删除训练平台数据集或已导出压缩包。已完成数据可导出 Ultralytics YOLO、COCO、VOC 或 LabelMe。详见[协作标注文档](docs/COLLABORATIVE_ANNOTATION.md)。
+不再强制依赖 Roboflow。“项目中心”的目标检测项目会自动同步到个人/团队标注中心；默认“待处理”队列会自动恢复未完成任务，选择类别、拖动画框，再点击“完成并下一张”即可。页面会静默自动保存，数字键可切换类别，直接点击已有框即可编辑；没有目标的图片使用“空图并下一张”作为负样本完成。团队成员可以直接从公共队列自动领取下一张，不必预先分配；审核默认关闭，需要双人复核时再按项目开启。“项目与团队”默认只展示当前项目和高频流程，成员、任务、导出及危险操作按需展开。管理员可以通过完整名称确认删除协作标注副本，操作不会连带删除训练平台数据集或已导出压缩包。已完成数据可导出 Ultralytics YOLO、COCO、VOC 或 LabelMe。详见[协作标注文档](docs/COLLABORATIVE_ANNOTATION.md)。
 
 推荐直接使用 Roboflow/YOLO 导出的标准目录：
 

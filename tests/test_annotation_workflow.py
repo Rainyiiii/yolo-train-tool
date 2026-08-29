@@ -71,6 +71,24 @@ class AnnotationWorkflowTest(unittest.TestCase):
         )
         self.assertEqual(submitted["status"], "submitted")
 
+    def test_todo_queue_excludes_completed_work_and_prioritizes_resume(self) -> None:
+        project = self.store.create_project(self.admin, "连续标注", ["object"], self._dataset())
+        item_ids = [value["id"] for value in self.store.list_items(project["id"], self.admin)]
+        first = self.store.acquire_item(item_ids[0], self.admin)
+        saved = self.store.save_item(
+            first["id"],
+            self.admin,
+            [{"label": "object", "x": 5, "y": 6, "w": 20, "h": 18}],
+            first["revision"],
+            submit=False,
+        )
+        second = self.store.acquire_item(item_ids[1], self.admin)
+        self.store.save_item(second["id"], self.admin, [], second["revision"], submit=True)
+
+        todo = self.store.list_items(project["id"], self.admin, "todo")
+        self.assertEqual([value["id"] for value in todo], [saved["id"]])
+        self.assertEqual(todo[0]["status"], "in_progress")
+
     def test_ui_exposes_crosshair_and_single_complete_action(self) -> None:
         self.assertIn("function drawCrosshair", ANNOTATION_HTML)
         self.assertIn("ctx.moveTo(0,y)", ANNOTATION_HTML)
@@ -79,6 +97,18 @@ class AnnotationWorkflowTest(unittest.TestCase):
         self.assertIn("完成并下一张", ANNOTATION_HTML)
         self.assertIn("同步项目中心", ANNOTATION_HTML)
         self.assertNotIn(">提交审核</button>", ANNOTATION_HTML)
+
+    def test_ui_exposes_continuous_annotation_controls(self) -> None:
+        self.assertIn('<option value="todo" selected>待处理</option>', ANNOTATION_HTML)
+        self.assertIn('id="saveStatus"', ANNOTATION_HTML)
+        self.assertIn("function scheduleAutosave", ANNOTATION_HTML)
+        self.assertIn("function completeEmptyAndNext", ANNOTATION_HTML)
+        self.assertIn("function releaseCurrentItem", ANNOTATION_HTML)
+        self.assertIn("空图并下一张", ANNOTATION_HTML)
+        self.assertIn("event.button===1||spaceHeld", ANNOTATION_HTML)
+        self.assertIn("index>=0&&!event.shiftKey", ANNOTATION_HTML)
+        self.assertIn("/^[1-9]$/.test(event.key)", ANNOTATION_HTML)
+        self.assertIn("tool==='select'&&selectedBox>=0", ANNOTATION_HTML)
 
     def test_admin_can_delete_only_the_managed_annotation_copy(self) -> None:
         dataset = self._dataset()

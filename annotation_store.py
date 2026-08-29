@@ -554,7 +554,9 @@ class AnnotationStore:
         if actor["role"] == "annotator":
             conditions.append("(i.assignee_id=? OR (i.assignee_id IS NULL AND i.status='unassigned'))")
             params.append(actor["id"])
-        if status and status in STATUSES:
+        if status == "todo":
+            conditions.append("i.status IN ('unassigned','assigned','in_progress','rejected')")
+        elif status and status in STATUSES:
             conditions.append("i.status=?")
             params.append(status)
         with self.connect() as connection:
@@ -564,8 +566,8 @@ class AnnotationStore:
                     u.username AS assignee_name
                     FROM items i LEFT JOIN users u ON u.id=i.assignee_id
                     WHERE {' AND '.join(conditions)}
-                    ORDER BY CASE i.status WHEN 'rejected' THEN 0 WHEN 'assigned' THEN 1 WHEN 'in_progress' THEN 2
-                             WHEN 'submitted' THEN 3 WHEN 'approved' THEN 4 ELSE 5 END, i.id""",
+                    ORDER BY CASE i.status WHEN 'rejected' THEN 0 WHEN 'in_progress' THEN 1 WHEN 'assigned' THEN 2
+                             WHEN 'unassigned' THEN 3 WHEN 'submitted' THEN 4 WHEN 'approved' THEN 5 ELSE 6 END, i.id""",
                 params,
             ).fetchall()
         now = _now()
