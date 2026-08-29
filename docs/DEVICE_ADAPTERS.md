@@ -1,18 +1,19 @@
 # 设备适配与模型导出
 
-YOLO团队训练平台的训练流程与设备转换流程相互独立。训练统一保留标准模型资产，部署时再根据目标运行时导出；遇到必须使用厂商编译器的平台，则以固定尺寸 ONNX 作为交接格式。
+YOLO团队训练平台把“训练模型”“转换中间件”“目标设备可运行模型”分开记录。页面会显示最终产物、运行时和连续步骤；厂商编译器未执行时只标记为“等待转换”，不会把中间 ONNX 当作 NPU 模型。
 
 ## 当前设备配置档
 
-| 配置档 | 推荐产物 | 适用范围 | 当前状态 |
+| 配置档 | 起步建议 | 最终产物 | 当前边界 |
 | --- | --- | --- | --- |
-| 通用平台 / ONNX Runtime | ONNX | Windows、Linux、x86_64、ARM64 | 已提供统一导出与部署清单 |
-| 树莓派 CPU | NCNN；ONNX 回退 | Raspberry Pi 4/5 等 CPU 推理 | 已提供导出入口，待建立真机基准 |
-| 香橙派 / Rockchip | RKNN；ONNX 交接 | 采用 RK3588、RK3576、RK3566、RK3568 的板卡 | 已提供 RKNN 导出入口，待逐板验证 |
-| 地瓜机器人 RDK | ONNX | RDK X5、RDK X3 | 已提供 ONNX 与后续步骤清单，厂商 PTQ 尚未集成 |
-| Sipeed MaixCAM | ONNX → `.cvimodel` + `.mud` | CV181x | 保留原专用转换流程 |
-| NVIDIA Jetson | TensorRT engine；ONNX 回退 | Jetson Orin 等 | 已提供导出入口；应在匹配目标环境中生成 engine |
-| Intel | OpenVINO | Intel CPU、GPU、受支持的 NPU | 已提供导出入口，待设备矩阵验证 |
+| 通用平台 | 固定尺寸 | `.onnx` | Windows/Linux/x86_64/ARM64 通用交接 |
+| Raspberry Pi 4 | YOLO n 规格、416×416 | NCNN 模型目录 | ARM64 CPU；待本项目真机基准 |
+| Raspberry Pi 5 | YOLO n 规格、640×640 | NCNN 模型目录 | ARM64 CPU；待本项目真机基准 |
+| 香橙派 / Rockchip | 按实际 SoC 选择 | `.rknn` | 仅适用于支持的 RK35xx NPU |
+| D-Robotics RDK X5 | YOLO n、640×640、INT8 PTQ | Bayes-e `.bin` | Windows 准备包；x86 Linux 编译；X5 运行 |
+| Sipeed MaixCAM | 固定输入 ONNX | `.cvimodel` + `.mud` | 保留专用 TPU-MLIR 流程 |
+| NVIDIA Jetson | TensorRT | `.engine` | 应在匹配 JetPack/TensorRT 环境生成 |
+| Intel | OpenVINO | OpenVINO 模型目录 | Intel CPU/GPU/受支持 NPU |
 
 “香橙派”是板卡品牌，不代表所有型号都使用 Rockchip NPU。只有确认 SoC 属于受支持的 RK35xx 系列时才选择 RKNN；Allwinner 等其他型号应先选择 NCNN 或通用 ONNX。
 
@@ -22,19 +23,20 @@ YOLO团队训练平台的训练流程与设备转换流程相互独立。训练�
 
 1. 选择训练资产中的 `model-best.pt`；训练结束后通常会自动填入。
 2. 选择目标平台，格式保留“自动推荐”即可。
-3. RKNN 等平台按需填写芯片名；INT8 必须提供 `data.yaml` 和有代表性的校准图片。
-4. 点击“生成部署模型”。输出目录中会同时生成模型和 `*.manifest.json` 部署清单。
-5. 在目标设备上复测预处理、类别顺序、置信度、速度、内存和精度。
+3. 可点击“将设备建议带到训练页”带入下一次训练的模型和尺寸；这不会改变已经训练好的权重。
+4. RDK X5 选择 20–50 张代表性校准图片；其他 INT8 路线按要求提供 `data.yaml`。
+5. 点击“生成部署模型 / 转换包”。部署清单会区分中间产物、最终产物和当前状态。
+6. 在目标设备上复测预处理、类别顺序、置信度、速度、内存和精度。
 
 也可以直接使用命令行：
 
 ```bash
 python export_model.py \
   --model workspace/training-runs/default-project/default-project__yolo-model__train__20260824-120000/model-best.pt \
-  --target raspberry_pi \
+  --target raspberry_pi_4 \
   --format auto \
-  --imgsz 480,640 \
-  --output-dir deploy/raspberry_pi
+  --imgsz 416 \
+  --output-dir deploy/raspberry-pi-4
 ```
 
 Rockchip 示例：
@@ -47,13 +49,41 @@ python export_model.py \
   --output-dir deploy/rk3588
 ```
 
+## RDK X5 Bayes-e NPU
+
+RDK X5 使用 Sunrise 5 / Bayes-e BPU。X 系列运行模型是 `.bin`，不是 `.hbm`。官方流程使用固定形状 float32 NCHW ONNX、20–50 张代表性图片做 PTQ，运行时输入转换为 NV12，最终由 `hb_mapper` 生成 `*_bayese_*_nv12.bin`。
+
+```bash
+python export_model.py \
+  --model model-best.pt \
+  --target drobotics_rdk_x5 \
+  --imgsz 640 \
+  --calibration-images /path/to/representative-images \
+  --output-dir deploy/rdk-x5
+```
+
+输出的 `rdk-x5-npu-bundle` 包含原始 `.pt`、中间 ONNX、最多 50 张校准图片、`classes.txt`、`conversion-plan.json`、转换脚本和校验脚本。有 `.pt` 时，脚本会调用官方 `export_monkey_patch.py` 重新导出兼容 ONNX，不直接假定普通 Ultralytics ONNX 满足板端输出协议。
+
+在 x86_64 Ubuntu 22.04 + Python 3.10 的官方 OpenExplorer 环境中执行：
+
+```bash
+pip install rdkx5-yolo-mapper
+pip install -r requirements-rdk-x5.txt
+hb_mapper --version
+cd rdk-x5-npu-bundle
+bash convert_rdk_x5.sh
+bash verify_rdk_x5.sh output/你的模型_bayese_640x640_nv12.bin
+```
+
+工具链和板端 `libdnn` / `hbm_runtime` 应保持匹配。板端建议 RDK OS 3.5.0 或更新版本；发布前还要用留出的测试集复测量化精度。当前 Windows 自动化验证转换包结构和参数，但不替代真实 OpenExplorer 编译与 X5 真机运行。
+
 ## 为什么保留 ONNX
 
 ONNX 是本项目的通用中间格式，不等于每块板上的最终最优格式：
 
 - Raspberry Pi CPU 可进一步使用 NCNN。Ultralytics 的树莓派指南列出了 NCNN、ONNX、OpenVINO、MNN、LiteRT 等路线，并将 NCNN 作为 CPU 性能优先方案。
 - Rockchip 使用 RKNN Toolkit2 将模型交给 NPU；训练环境与 RKNN 工具链的 Python/驱动版本不应强行混装。
-- D-Robotics RDK 的 PTQ 流程接收 ONNX 与 YAML 配置；X5 和 X3 的 `march` 不同。
+- D-Robotics RDK X5 的 ONNX 只是 PTQ 中间件；`march` 为 `bayes-e`，最终产物必须是可由板端运行时加载的 `.bin`。
 - MaixCAM 需要固定输入尺寸，并由 TPU-MLIR 生成 `.cvimodel`，同时提供 `.mud` 描述文件。
 
 参考资料：
@@ -61,7 +91,8 @@ ONNX 是本项目的通用中间格式，不等于每块板上的最终最优格
 - [Ultralytics 模型导出格式](https://docs.ultralytics.com/modes/export/)
 - [Ultralytics Raspberry Pi 指南](https://docs.ultralytics.com/guides/raspberry-pi/)
 - [Rockchip RKNN Toolkit2](https://github.com/airockchip/rknn-toolkit2)
-- [D-Robotics RDK PTQ 流程](https://developer.d-robotics.cc/rdk_x_doc/en/Advanced_development/toolchain_development/intermediate/ptq_process)
+- [D-Robotics RDK X5 Model Zoo](https://github.com/D-Robotics/rdk_model_zoo/tree/rdk_x5)
+- [D-Robotics Ultralytics YOLO 转换](https://github.com/D-Robotics/rdk_model_zoo/tree/rdk_x5/samples/vision/ultralytics_yolo/conversion)
 - [Sipeed MaixCAM 模型转换](https://wiki.sipeed.com/maixpy/doc/en/ai_model_converter/maixcam.html)
 
 ## 新增设备适配器

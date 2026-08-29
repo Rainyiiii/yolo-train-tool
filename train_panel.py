@@ -32,7 +32,7 @@ import cv2
 import yaml
 
 from base_models import base_model_catalog, validate_model_name
-from device_profiles import public_device_profiles
+from device_profiles import DEVICE_PROFILES, public_device_profiles
 from model_assets import collect_model_assets, register_asset_manifest, register_asset_root, register_external_model
 from annotation_service import status_payload as annotation_service_status
 from project_manager import activate_project, create_project, delete_project, duplicate_project, inspect_dataset, project_catalog, update_project
@@ -143,8 +143,11 @@ DEFAULT_VALUES: dict[str, Any] = {
     "deployment_target": "generic_onnx",
     "export_format": "auto",
     "export_chip": "",
+    "export_img_width": "640",
+    "export_img_height": "640",
     "export_output_dir": str(DEPLOYMENT_EXPORTS_DIR),
     "export_data": "",
+    "deployment_calibration_dir": "",
     "export_int8": False,
     "test_model": "",
     "test_source": "camera",
@@ -1560,7 +1563,7 @@ def build_export_cmd(values: dict[str, Any]) -> list[Any]:
         "--model", values["deploy_model"],
         "--target", values["deployment_target"],
         "--format", values["export_format"],
-        "--imgsz", f"{values['img_height']},{values['img_width']}",
+        "--imgsz", f"{values['export_img_height']},{values['export_img_width']}",
     ]
     for option, key in (
         ("--chip", "export_chip"),
@@ -1570,6 +1573,8 @@ def build_export_cmd(values: dict[str, Any]) -> list[Any]:
     ):
         if values.get(key, "").strip():
             cmd += [option, values[key]]
+    if DEVICE_PROFILES.get(values["deployment_target"], {}).get("vendor_ptq") and values.get("deployment_calibration_dir", "").strip():
+        cmd += ["--calibration-images", values["deployment_calibration_dir"]]
     if as_bool(values.get("export_int8")):
         cmd.append("--int8")
     return cmd
@@ -1731,12 +1736,14 @@ def validate(action: str, values: dict[str, Any]) -> None:
             raise ValueError("请选择训练完成的 .pt 或已有 .onnx 模型。")
         if source.suffix.lower() not in {".pt", ".onnx"}:
             raise ValueError("部署模型目前支持 .pt 或 .onnx。")
-        if values.get("deployment_target") not in {
-            "generic_onnx", "raspberry_pi", "rockchip_rknn", "drobotics_rdk",
-            "maixcam", "nvidia_jetson", "intel_openvino",
-        }:
+        if values.get("deployment_target") not in DEVICE_PROFILES:
             raise ValueError("请选择有效的部署平台。")
-        if as_bool(values.get("export_int8")) and not values.get("export_data", "").strip():
+        profile = DEVICE_PROFILES[values["deployment_target"]]
+        if profile.get("vendor_ptq"):
+            calibration_dir = Path(values.get("deployment_calibration_dir", "").strip()).expanduser()
+            if not calibration_dir.is_dir():
+                raise ValueError("RDK X5 NPU 转换需要选择代表性校准图片目录（建议 20–50 张）。")
+        if as_bool(values.get("export_int8")) and not profile.get("vendor_ptq") and not values.get("export_data", "").strip():
             raise ValueError("INT8 导出需要填写 data.yaml 作为代表性校准数据。")
     elif action == "test":
         if not TEST_SCRIPT.exists():
@@ -2851,6 +2858,7 @@ body.sidebar-collapsed .status{display:none}
 @media(max-width:1100px){.pipeline{grid-template-columns:repeat(3,minmax(0,1fr))}.dashboard-hero{grid-template-columns:1fr}.header-tool{display:none}}
 @media(max-width:700px){.pipeline{grid-template-columns:1fr 1fr}.dashboard-focus h3{font-size:20px}.train-primary-bar{bottom:0}.nav-group{display:none}.diagnostics{grid-template-columns:1fr}}
 @media(max-width:700px){.project-toolbar{grid-template-columns:1fr}.project-toolbar .mini{text-align:left}.project-card-menu{width:100%}.project-card-menu .btn{flex:1;text-align:center}.project-modal-panel{padding:17px}}
+.deployment-workflow{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px;margin-top:13px}.deployment-step{position:relative;display:grid;grid-template-columns:28px minmax(0,1fr);gap:9px;align-items:center;min-height:58px;padding:10px 12px;border:1px solid var(--line);border-radius:12px;background:#fafbfd}.deployment-step:not(:last-child):after{content:'›';position:absolute;right:-8px;z-index:2;color:#98a4b3;font-size:19px}.deployment-step span{display:grid;place-items:center;width:28px;height:28px;border-radius:9px;background:#edf3ff;color:#2f67ca;font-weight:800}.deployment-step b{font-size:12px;line-height:1.45}@media(max-width:850px){.deployment-workflow{grid-template-columns:1fr 1fr}.deployment-step:not(:last-child):after{display:none}}@media(max-width:520px){.deployment-workflow{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -3118,15 +3126,19 @@ body.sidebar-collapsed .status{display:none}
         <h2>多平台部署与导出</h2><p class="hint">训练结束后会自动填入规范化的 model-best.pt。先选择目标设备，再生成适合该平台的模型和部署清单；厂商专用工具链与训练环境相互隔离。</p>
         <div class="grid">
           <div class="field full"><label>训练模型（.pt 或已有 .onnx）</label><div class="input-action"><input id="deploy_model" placeholder="训练完成后自动填入 model-best.pt"><button class="btn" onclick="pickDeployModel()">选择模型</button></div></div>
-          <div class="field"><label>目标平台</label><select id="deployment_target" onchange="updateDeploymentProfile()"><option value="generic_onnx">通用平台 / ONNX Runtime</option><option value="raspberry_pi">树莓派（CPU）</option><option value="rockchip_rknn">香橙派 / Rockchip RKNN</option><option value="drobotics_rdk">地瓜机器人 RDK X3 / X5</option><option value="maixcam">Sipeed MaixCAM</option><option value="nvidia_jetson">NVIDIA Jetson / TensorRT</option><option value="intel_openvino">Intel / OpenVINO</option></select></div>
+          <div class="field"><label>目标平台</label><select id="deployment_target" onchange="updateDeploymentProfile()"><option value="generic_onnx">通用平台 / ONNX Runtime</option><option value="raspberry_pi_4">树莓派 4（ARM64 CPU）</option><option value="raspberry_pi_5">树莓派 5（ARM64 CPU）</option><option value="rockchip_rknn">香橙派 / Rockchip RKNN</option><option value="drobotics_rdk_x5">地瓜机器人 RDK X5（Bayes-e NPU）</option><option value="maixcam">Sipeed MaixCAM</option><option value="nvidia_jetson">NVIDIA Jetson / TensorRT</option><option value="intel_openvino">Intel / OpenVINO</option><option value="raspberry_pi" hidden>树莓派（旧配置）</option><option value="drobotics_rdk" hidden>RDK X3 / X5（旧配置）</option></select></div>
           <div class="field"><label>导出格式</label><select id="export_format"><option value="auto">自动推荐</option><option value="onnx">ONNX</option><option value="ncnn">NCNN</option><option value="openvino">OpenVINO</option><option value="engine">TensorRT engine</option><option value="rknn">RKNN</option></select></div>
+          <div class="field sm"><label>导出宽度</label><input id="export_img_width" inputmode="numeric" value="640"></div>
+          <div class="field sm"><label>导出高度</label><input id="export_img_height" inputmode="numeric" value="640"></div>
           <div class="field advanced-setting"><label>目标芯片覆盖（可选）</label><input id="export_chip" placeholder="通常按目标平台自动选择"></div>
           <div class="field int8-setting"><label>校准数据 data.yaml</label><input id="export_data" placeholder="启用 INT8 时选择代表性数据"></div>
+          <div class="field full vendor-calibration-setting is-context-hidden"><label>RDK X5 PTQ 校准图片</label><div class="input-action"><input id="deployment_calibration_dir" placeholder="选择 20–50 张有代表性的训练图片目录"><button class="btn" onclick="useTrainingImagesForCalibration()">使用训练图片</button><button class="btn" onclick="pickDeploymentCalibrationDir()">选择文件夹</button></div><div class="mini">转换包最多携带 50 张图片；最终 `.bin` 在 x86 Linux OpenExplorer 中生成，不在板卡上编译。</div></div>
           <div class="field full"><label>输出目录</label><div class="input-action"><input id="export_output_dir"><button class="btn" onclick="pickDeployOutputDir()">选择文件夹</button></div></div>
           <div class="field full"><div class="choice"><label><input id="export_int8" type="checkbox"><span>INT8 量化（更小更快；导出前需要校准数据，部署前必须复测精度）</span></label></div></div>
         </div>
         <div id="deployment-profile-note" class="check-list"></div>
-        <div class="actions"><div class="btns"><button class="btn" onclick="copyCommand('export')">复制导出命令</button><button class="btn" onclick="saveDefaults('部署设置')">存为默认</button></div><button class="btn blue" onclick="runAction('export')">生成部署模型</button></div>
+        <div id="deployment-workflow" class="deployment-workflow"></div>
+        <div class="actions"><div class="btns"><button class="btn" onclick="applyDeploymentTrainingPreset()">将设备建议带到训练页</button><button class="btn" onclick="copyCommand('export')">复制导出命令</button><button class="btn" onclick="saveDefaults('部署设置')">存为默认</button></div><button class="btn blue" onclick="runAction('export')">生成部署模型 / 转换包</button></div>
         <div class="cmd" id="cmd-export"></div>
 
         <div class="advanced-setting" style="margin-top:28px">
@@ -3327,13 +3339,14 @@ body.sidebar-collapsed .status{display:none}
 </div>
 <div class="toast" id="toast"></div>
 <script>
-const fields=['dataset_root','train_task','train_images_dir','train_annotations_dir','prepared_dataset_yaml','train_ratio_percent','val_ratio_percent','img_width','img_height','image_resize_mode','epochs','batch','train_workers','patience','lr0','conda_env','base_model','torch_cuda','train_cache','raw_dataset_root','raw_images_dir','raw_labels_dir','raw_output_dir','raw_class_names','asset_scan_root','project_name','model_name','remote_train_user','remote_train_host','remote_train_port','remote_train_work_dir','deploy_model','deployment_target','export_format','export_chip','export_output_dir','export_data','model_path','classes_path','calib_dir','test_image','vm_user','vm_host','vm_work_dir','test_model','test_image_file','test_image_folder','test_output_dir','camera_index','conf','label_video_dir','label_video','label_camera_index','label_source_type','label_images_input_dir','label_name','label_interval','label_images_dir','label_annotations_dir','label_prefix','label_tracker','label_start_frame','label_max_frames','label_display_scale','label_jpeg_quality'];
+const fields=['dataset_root','train_task','train_images_dir','train_annotations_dir','prepared_dataset_yaml','train_ratio_percent','val_ratio_percent','img_width','img_height','image_resize_mode','epochs','batch','train_workers','patience','lr0','conda_env','base_model','torch_cuda','train_cache','raw_dataset_root','raw_images_dir','raw_labels_dir','raw_output_dir','raw_class_names','asset_scan_root','project_name','model_name','remote_train_user','remote_train_host','remote_train_port','remote_train_work_dir','deploy_model','deployment_target','export_format','export_chip','export_img_width','export_img_height','export_output_dir','export_data','deployment_calibration_dir','model_path','classes_path','calib_dir','test_image','vm_user','vm_host','vm_work_dir','test_model','test_image_file','test_image_folder','test_output_dir','camera_index','conf','label_video_dir','label_video','label_camera_index','label_source_type','label_images_input_dir','label_name','label_interval','label_images_dir','label_annotations_dir','label_prefix','label_tracker','label_start_frame','label_max_frames','label_display_scale','label_jpeg_quality'];
 
 
 
 let values={};
 let projectCatalog={active_project_id:'',projects:[],summary:{}};
 let deploymentProfiles=[];
+let deploymentProfileLastTarget='';
 let modelAssetCatalog={summary:{},roots:[],datasets:[]};
 let baseModelCatalog={summary:{},families:[],models:[]};
 let modelDownloadWasRunning=false;
@@ -3443,9 +3456,11 @@ function updateTrainProgress(p){p=p||{}; const task=p.task||document.querySelect
 function updatePreparedDatasetUI(){const active=!!String(values.prepared_dataset_yaml||'').trim(); const banner=document.getElementById('prepared-dataset-banner'); const annotations=document.getElementById('annotations-field'); const split=document.getElementById('train_ratio_percent')?.closest('.field'); if(banner){banner.hidden=!active; banner.innerHTML=active?`<div class="check-item ok"><span class="check-icon">✓</span><b>已直接导入 YOLO 数据集</b><span class="check-detail">${values.prepared_dataset_yaml}；沿用原 train / valid / test，不需要 XML，也不会重新随机划分。</span></div>`:''} if(annotations) annotations.hidden=active||(document.querySelector('input[name="train_task"]:checked')?.value||'detect')==='classify'; if(split) split.hidden=active}
 function updateTrainTaskUI(){const task=document.querySelector('input[name="train_task"]:checked')?.value||'detect'; const annotations=document.getElementById('annotations-field'); const hint=document.getElementById('train-task-hint'); const prepared=!!String(values.prepared_dataset_yaml||'').trim(); if(annotations) annotations.hidden=task==='classify'||prepared; if(hint) hint.textContent=task==='classify'?'分类数据集结构：Images Dir/类别名/图片。启用测试集时每个类别至少 3 张图片；Annotations Dir 不参与分类训练；Base Model 请使用分类权重，例如 yolo11n-cls.pt。':prepared?'已导入标准 YOLO 数据集，将直接使用 TXT 标签和原始 train/valid/test 划分。':'检测数据集结构：可直接导入 data.yaml 数据集，或使用同名图片 + VOC XML。启用测试集时至少需要 3 对有效样本。'; updatePreparedDatasetUI()}
 async function loadDeviceProfiles(){try{const r=await fetch('/api/device-profiles'); const j=await r.json(); deploymentProfiles=j.items||[]; updateDeploymentProfile()}catch(e){}}
-function updateDeploymentProfile(){const target=document.getElementById('deployment_target')?.value||values.deployment_target||'generic_onnx'; const profile=deploymentProfiles.find(item=>item.id===target); if(!profile){updateExportOptionsUI();return} const format=document.getElementById('export_format'); if(format){for(const option of format.options) option.disabled=option.value!=='auto'&&!profile.formats.includes(option.value); if(format.selectedOptions[0]?.disabled) format.value='auto'} const chip=document.getElementById('export_chip'); if(chip) chip.placeholder=profile.chips?.length?`可选：${profile.chips.join('、')}；默认 ${profile.default_chip||profile.chips[0]}`:'该平台不需要填写'; const box=document.getElementById('deployment-profile-note'); if(box) box.innerHTML=`<div class="check-item ok"><span class="check-icon">✓</span><b>推荐 ${String(profile.recommended_format).toUpperCase()}</b><span class="check-detail">${profile.summary}</span></div><div class="check-item ${profile.vendor_toolchain?'warn':'ok'}"><span class="check-icon">${profile.vendor_toolchain?'!':'✓'}</span><b>${profile.vendor_toolchain?'需要设备厂商工具链':'可直接进入运行时验证'}</b><span class="check-detail">${profile.next_step}</span></div>`;updateExportOptionsUI()}
+function updateDeploymentProfile(){const target=document.getElementById('deployment_target')?.value||values.deployment_target||'generic_onnx';const profile=deploymentProfiles.find(item=>item.id===target);if(!profile){updateExportOptionsUI();return}const targetChanged=deploymentProfileLastTarget!==target;deploymentProfileLastTarget=target;if(targetChanged&&profile.recommended_input?.length===2){setInputValue('export_img_height',String(profile.recommended_input[0]));setInputValue('export_img_width',String(profile.recommended_input[1]))}const format=document.getElementById('export_format');if(format){for(const option of format.options)option.disabled=option.value!=='auto'&&!profile.formats.includes(option.value);if(format.selectedOptions[0]?.disabled)format.value='auto'}const chip=document.getElementById('export_chip');if(chip){const chips=profile.chips||[];chip.placeholder=chips.length?`可选：${chips.join('、')}；默认 ${profile.default_chip||chips[0]}`:'该平台不需要填写';if(chips.length&&!chips.includes(chip.value.trim().toLowerCase()))chip.value=profile.default_chip||chips[0];if(!chips.length)chip.value=''}const vendorPTQ=!!profile.vendor_ptq;document.querySelectorAll('.vendor-calibration-setting').forEach(el=>el.classList.toggle('is-context-hidden',!vendorPTQ));const calibration=document.getElementById('deployment_calibration_dir');if(vendorPTQ&&calibration&&!calibration.value.trim()&&String(values.train_images_dir||'').trim()){calibration.value=values.train_images_dir;values.deployment_calibration_dir=values.train_images_dir}const int8=document.getElementById('export_int8');if(int8){if(profile.forced_int8)int8.checked=true;else if(int8.disabled)int8.checked=false;int8.disabled=!!profile.forced_int8}const finalArtifact=profile.final_artifact||String(profile.recommended_format).toUpperCase();const runtime=profile.runtime||'目标平台运行时';const box=document.getElementById('deployment-profile-note');if(box)box.innerHTML=`<div class="check-item ok"><span class="check-icon">✓</span><b>最终产物：${escapeHtml(finalArtifact)}</b><span class="check-detail">${escapeHtml(profile.summary)}</span></div><div class="check-item ${profile.vendor_toolchain?'warn':'ok'}"><span class="check-icon">${profile.vendor_toolchain?'!':'✓'}</span><b>${profile.vendor_toolchain?'需要厂商转换步骤':'可直接导出并验证'}</b><span class="check-detail">运行时：${escapeHtml(runtime)}。${escapeHtml(profile.next_step)}</span></div>`;const workflow=document.getElementById('deployment-workflow');if(workflow){workflow.innerHTML=(profile.workflow||[]).map((step,index)=>`<div class="deployment-step"><span>${index+1}</span><b>${escapeHtml(step)}</b></div>`).join('')}updateExportOptionsUI()}
+function applyDeploymentTrainingPreset(){const target=document.getElementById('deployment_target')?.value||values.deployment_target;const profile=deploymentProfiles.find(item=>item.id===target);if(!profile)return;const size=profile.recommended_input||[];if(size.length===2){setInputValue('img_height',String(size[0]));setInputValue('img_width',String(size[1]))}if(profile.recommended_model){const task=document.querySelector('input[name="train_task"]:checked')?.value||'detect';const model=task==='classify'?String(profile.recommended_model).replace(/\.pt$/,'-cls.pt'):profile.recommended_model;setInputValue('base_model',model)}if(profile.vendor_ptq&&!String(values.deployment_calibration_dir||'').trim()&&String(values.train_images_dir||'').trim())setInputValue('deployment_calibration_dir',values.train_images_dir);saveValues();updateCommands();scheduleResourceEstimate();scheduleTrainReadiness(120);showTab('train');toast(`已带入 ${profile.label} 的起步建议；已有模型不会被自动重训`)}
+function useTrainingImagesForCalibration(){const source=String(values.train_images_dir||document.getElementById('train_images_dir')?.value||'').trim();if(!source){toast('训练图片目录还没有填写');return}setInputValue('deployment_calibration_dir',source);saveValues();updateCommands();toast('已使用训练图片作为 PTQ 校准来源')}
 function updateTestSourceUI(){const source=document.querySelector('input[name="test_source"]:checked')?.value||'camera';document.querySelectorAll('.test-image-setting').forEach(el=>el.classList.toggle('is-context-hidden',source!=='image'));document.querySelectorAll('.test-folder-setting').forEach(el=>el.classList.toggle('is-context-hidden',source!=='folder'));document.querySelectorAll('.test-camera-setting').forEach(el=>el.classList.toggle('is-context-hidden',source!=='camera'))}
-function updateExportOptionsUI(){const enabled=!!document.getElementById('export_int8')?.checked;document.querySelectorAll('.int8-setting').forEach(el=>el.classList.toggle('is-context-hidden',!enabled));const data=document.getElementById('export_data');if(data)data.required=enabled}
+function updateExportOptionsUI(){const profile=deploymentProfiles.find(item=>item.id===(document.getElementById('deployment_target')?.value||values.deployment_target));const enabled=!!document.getElementById('export_int8')?.checked&&!profile?.vendor_ptq;document.querySelectorAll('.int8-setting').forEach(el=>el.classList.toggle('is-context-hidden',!enabled));const data=document.getElementById('export_data');if(data)data.required=enabled}
 function syncLabelFields(prefix,toCanonical){const pairs=prefix==='camera'?[['label_name_camera','label_name'],['label_prefix_camera','label_prefix'],['label_images_dir_camera','label_images_dir'],['label_annotations_dir_camera','label_annotations_dir'],['label_tracker_camera','label_tracker'],['label_interval_camera','label_interval'],['label_max_frames_camera','label_max_frames'],['label_display_scale_camera','label_display_scale'],['label_jpeg_quality_camera','label_jpeg_quality']]:[['label_name_images','label_name'],['label_annotations_dir_images','label_annotations_dir'],['label_tracker_images','label_tracker'],['label_interval_images','label_interval'],['label_start_frame_images','label_start_frame'],['label_max_frames_images','label_max_frames'],['label_display_scale_images','label_display_scale']]; for(const [sourceId,canonicalId] of pairs){const from=document.getElementById(toCanonical?sourceId:canonicalId); const to=document.getElementById(toCanonical?canonicalId:sourceId); if(from&&to) to.value=from.value}}
 function updateLabelSourceUI(){const source=document.querySelector('input[name="label_source_type"]:checked')?.value||'video'; const video=document.getElementById('label-video-source'); const camera=document.getElementById('label-camera-source'); const images=document.getElementById('label-images-source'); const start=document.getElementById('label-start-button'); if(video) video.hidden=source!=='video'; if(camera) camera.hidden=source!=='camera'; if(images) images.hidden=source!=='images'; if(source==='camera') syncLabelFields('camera',false); if(source==='images') syncLabelFields('images',false); if(start) start.textContent=source==='camera'?'在网页中开始摄像头标注':source==='images'?'在网页中开始图片集标注':'在网页中开始视频标注'}
 function collect(){const source=document.querySelector('input[name="label_source_type"]:checked')?.value||'video'; if(source==='camera') syncLabelFields('camera',true); if(source==='images') syncLabelFields('images',true); for(const id of fields){const el=document.getElementById(id); if(el) values[id]=el.value} values.skip_vm_convert=!!document.getElementById('skip_vm_convert')?.checked; values.export_int8=!!document.getElementById('export_int8')?.checked; values.raw_overwrite=!!document.getElementById('raw_overwrite')?.checked; for(const n of ['operator_mode','train_mode','train_device','train_task','test_source','label_source_type']){const el=document.querySelector(`input[name="${n}"]:checked`); if(el) values[n]=el.value} return values}
@@ -3478,6 +3493,7 @@ async function convertRawDataset(){const button=document.getElementById('raw-con
 async function pickBaseModel(){try{const j=await api('/api/pick-base-model',{values:collect()}); if(j.path){setInputValue('base_model',j.path); await saveValues(); updateCommands(); scheduleResourceEstimate(); scheduleTrainReadiness(120)}else toast('未选择模型')}catch(e){toast(e.message)}}
 async function pickDeployModel(){try{const j=await api('/api/pick-deploy-model',{values:collect()}); if(j.path){setInputValue('deploy_model',j.path); await saveValues(); updateCommands()}else toast('未选择模型')}catch(e){toast(e.message)}}
 async function pickDeployOutputDir(){try{const j=await api('/api/pick-deploy-output-dir',{values:collect()}); if(j.path){setInputValue('export_output_dir',j.path); await saveValues(); updateCommands()}else toast('未选择文件夹')}catch(e){toast(e.message)}}
+async function pickDeploymentCalibrationDir(){try{const j=await api('/api/pick-deployment-calibration-dir',{values:collect()});if(j.path){setInputValue('deployment_calibration_dir',j.path);await saveValues();updateCommands()}else toast('未选择文件夹')}catch(e){toast(e.message)}}
 function videoPrefix(video){return video.stem.replace(/[^\w\u4e00-\u9fa5-]+/g,'_').replace(/^_+|_+$/g,'')||'track'}
 function videoUrl(video,path='/api/video-file'){return `${path}?path=${encodeURIComponent(video.path)}&t=${Date.now()}`}
 function videoSizeText(video){const size=Number(video.size||0); if(!size) return ''; const units=['B','KB','MB','GB','TB']; let n=size,i=0; while(n>=1024&&i<units.length-1){n/=1024;i++} return `${n>=10||i===0?n.toFixed(0):n.toFixed(1)} ${units[i]}`}
@@ -3968,6 +3984,11 @@ class PanelHandler(BaseHTTPRequestHandler):
             if self.path == "/api/pick-deploy-output-dir":
                 values = clean_values(body.get("values"))
                 self.send_json({"path": pick_directory(values.get("export_output_dir", ""), "选择部署模型输出目录")})
+                return
+            if self.path == "/api/pick-deployment-calibration-dir":
+                values = clean_values(body.get("values"))
+                initial = values.get("deployment_calibration_dir", "") or values.get("train_images_dir", "")
+                self.send_json({"path": pick_directory(initial, "选择 RDK X5 PTQ 校准图片目录")})
                 return
             if self.path == "/api/pick-asset-root":
                 values = clean_values(body.get("values"))

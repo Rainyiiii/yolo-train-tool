@@ -87,6 +87,18 @@ class WorkspaceLayoutTests(unittest.TestCase):
         self.assertIn("function updateDeleteProjectGuard()", HTML_PAGE)
         self.assertIn("/api/projects/delete", HTML_PAGE)
 
+    def test_deployment_page_exposes_board_specific_continuous_workflows(self) -> None:
+        self.assertIn('value="raspberry_pi_4"', HTML_PAGE)
+        self.assertIn('value="raspberry_pi_5"', HTML_PAGE)
+        self.assertIn('value="drobotics_rdk_x5"', HTML_PAGE)
+        self.assertIn('id="export_img_width"', HTML_PAGE)
+        self.assertIn('id="export_img_height"', HTML_PAGE)
+        self.assertIn('id="deployment_calibration_dir"', HTML_PAGE)
+        self.assertIn('id="deployment-workflow"', HTML_PAGE)
+        self.assertIn("function applyDeploymentTrainingPreset", HTML_PAGE)
+        self.assertIn("function useTrainingImagesForCalibration", HTML_PAGE)
+        self.assertIn("最终产物：", HTML_PAGE)
+
     def test_mobile_falls_back_to_document_scrolling(self) -> None:
         self.assertIn("html,body{height:auto;overflow:auto}", HTML_PAGE)
         self.assertIn(".layout,body.sidebar-collapsed .layout{height:auto;grid-template-columns:1fr", HTML_PAGE)

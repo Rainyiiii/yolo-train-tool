@@ -41,6 +41,30 @@ class ExportModelTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "INT8"):
                 export_model(args)
 
+    def test_rdk_x5_export_records_intermediate_and_pending_bin(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            model = root / "demo.onnx"
+            model.write_bytes(b"onnx")
+            calibration = root / "calibration"
+            calibration.mkdir()
+            for index in range(20):
+                (calibration / f"sample-{index}.jpg").write_bytes(b"image")
+            args = argparse.Namespace(
+                model=str(model), target="drobotics_rdk_x5", format="auto", chip="x5",
+                output_dir=str(root / "deploy"), data="", classes="", int8=True,
+                calibration_images=str(calibration), imgsz=640,
+            )
+            with patch("export_model.inspect_onnx_runtime", return_value={"provider": "CPUExecutionProvider"}):
+                artifact, manifest_path = export_model(args)
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertTrue(artifact.is_dir())
+            self.assertEqual(manifest["target"], "drobotics_rdk_x5")
+            self.assertEqual(manifest["final_artifact"], "Bayes-e INT8 .bin")
+            self.assertTrue(manifest["intermediate_artifact"].endswith(".onnx"))
+            self.assertEqual(manifest["vendor_conversion"]["status"], "conversion_required")
+            self.assertTrue(manifest["vendor_conversion"]["expected_final_artifact"].endswith("*_bayese_*_nv12.bin"))
+
 
 if __name__ == "__main__":
     unittest.main()

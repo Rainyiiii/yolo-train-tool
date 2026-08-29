@@ -16,7 +16,7 @@ cd yolo-train-tool
 普通队友直接双击发布页中的安装器：
 
 ```text
-YOLO-Team-Training-Platform-Setup-v3.2.12-beta.exe
+YOLO-Team-Training-Platform-Setup-v3.2.13-beta.exe
 ```
 
 安装器会自动：
@@ -131,7 +131,7 @@ dataset/
 
 ## 8. 多平台导出
 
-训练完成后进入“部署与导出”，选择训练资产中的 `model-best.pt`、目标平台和输出目录。平台会生成目标模型以及 `*.manifest.json` 部署清单。当前内置通用 ONNX、树莓派 NCNN、Rockchip RKNN、地瓜 RDK ONNX 交接、MaixCAM、TensorRT 和 OpenVINO 配置档，详见[设备适配文档](DEVICE_ADAPTERS.md)。
+训练完成后进入“部署与导出”，选择训练资产中的 `model-best.pt`、目标平台和输出目录。树莓派 4、树莓派 5 和 RDK X5 已拆成独立配置，页面会显示每一步、最终产物和目标运行时；“将设备建议带到训练页”可一次带入起步模型与固定输入尺寸。平台会生成目标模型以及 `*.manifest.json` 部署清单，详见[设备适配文档](DEVICE_ADAPTERS.md)。
 
 ONNX 仍是厂商工具链之间的主要交接格式。项目安装器会自动安装：
 
@@ -142,7 +142,7 @@ ONNX 仍是厂商工具链之间的主要交接格式。项目安装器会自动
 
 如果使用远程训练环境，远程工具会根据 CPU/CUDA 配置选择 `onnxruntime` 或 `onnxruntime-gpu`。
 
-INT8 导出需要填写 `data.yaml` 并使用有代表性的校准数据。导出成功不代表板端适配已经完成；部署前必须在目标设备核对预处理、类别顺序、输出张量、速度和精度。
+通用 INT8 导出需要填写 `data.yaml`。RDK X5 会强制使用厂商 PTQ，并要求选择 20–50 张代表性图片；Windows 端生成可移植转换包，最终 `.bin` 在 x86 Ubuntu 22.04 的 OpenExplorer 中编译。导出成功不代表板端适配已经完成；部署前必须在目标设备核对预处理、类别顺序、输出张量、速度和精度。
 
 ## 9. 半自动标注
 

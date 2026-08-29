@@ -41,7 +41,7 @@ Workspace/exports/deployments/<target>/
    └─ <model>__<target>__<format>__YYYYMMDD-HHMMSS.manifest.json
 ```
 
-部署清单通过 `source_model` 回连训练模型，记录目标平台、格式、芯片、输入尺寸、量化和下一步厂商工具链要求。
+部署清单通过 `source_model` 回连训练模型，记录目标平台、格式、芯片、输入尺寸、量化和下一步厂商工具链要求。RDK X5 清单额外区分 `intermediate_artifact`、最终 Bayes-e `.bin` 目标与 `conversion_required` 状态，避免把 ONNX 中间件误认为板端模型。
 
 ## 本地索引
 

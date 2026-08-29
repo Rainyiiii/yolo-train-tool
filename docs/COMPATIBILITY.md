@@ -13,8 +13,9 @@
 | 无 NVIDIA GPU | 自动使用 CPU 版 PyTorch，功能完整但训练较慢 |
 | 浏览器 | Chrome、Edge、Firefox 等现代浏览器 |
 | macOS | 当前未提供一键部署脚本，未做完整验证 |
-| ARM/树莓派 | 支持生成 NCNN/ONNX 部署产物；训练仍建议使用 x86_64 主机，真机矩阵持续补充 |
-| Rockchip / 地瓜 RDK / MaixCAM | 已提供设备配置或专用转换入口；不同板型仍需按文档使用厂商工具链并真机验证 |
+| ARM/树莓派 | Raspberry Pi 4/5 独立 NCNN/ONNX 配置；训练仍建议使用 x86_64 主机，真机矩阵持续补充 |
+| 地瓜机器人 RDK X5 | 生成 Bayes-e INT8 `.bin` 转换包；最终编译需 x86 Ubuntu 22.04 + OpenExplorer，板端建议 RDK OS 3.5+ |
+| Rockchip / MaixCAM | 已提供设备配置或专用转换入口；不同板型仍需按文档使用厂商工具链并真机验证 |
 
 Python 3.14 是当前最新稳定功能版本；Python 3.15 仍是预发布版本，因此暂不列入保证范围。即使个别依赖已经提供对应 wheel，也可能出现 PyTorch、OpenCV 或 ONNX 组件不兼容。
 
@@ -68,7 +69,7 @@ NVIDIA 环境首次安装可能需要数 GB 磁盘空间。建议预留至少 8�
 - 如需远程使用，建议通过 SSH 端口转发或反向代理，不建议直接暴露到公网。
 - Ubuntu 脚本会优先寻找本机已有的 Python 3.10–3.14；如果没有，会尝试通过 `apt` 安装 `python3`、`python3-venv` 和 `python3-pip`。如果发行版默认 Python 低于 3.10，需要手动安装受支持版本。
 - Python、PyTorch、Ultralytics 和 ONNX 依赖会持续更新；发布新版本前建议在干净的 Windows 和 Ubuntu 环境各测试一次。
-- TensorRT engine、RKNN、RDK PTQ 和 MaixCAM 模型与厂商运行时/驱动版本相关，不保证跨设备或跨版本直接复用。
+- TensorRT engine、RKNN、RDK X5 `.bin` 和 MaixCAM 模型与厂商运行时/驱动版本相关，不保证跨设备或跨版本直接复用。X5 属于 Bayes-e，最终运行模型扩展名是 `.bin`；`.hbm` 不能作为 X5 适配完成的判据。
 
 ## 常见排错
 
