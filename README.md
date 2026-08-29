@@ -12,7 +12,7 @@ YOLO团队训练平台是一个面向 Windows、Ubuntu 和多种边缘部署平�
 
 ## 队友第一次使用
 
-1. 双击 `YOLO-Team-Training-Platform-Setup-v3.2.16-beta.exe`。
+1. 双击 `YOLO-Team-Training-Platform-Setup-v3.2.17-beta.exe`。
 2. 保持默认安装目录 `D:\YOLOTeamTrainingPlatform`，点击安装。
 3. 安装器自动准备 .NET、WebView2、Python、PyTorch、ONNX Runtime 和平台依赖。
 4. 安装完成后从桌面打开“YOLO团队训练平台”。
@@ -25,13 +25,13 @@ WSL / Ubuntu / RDK X5 编译工具链不是主安装包的必选依赖。只有�
 
 第一次安装需要联网下载训练组件，所需时间取决于网络速度。以后直接运行新版安装包会默认执行增量更新：保留健康的 Python、PyTorch、ONNX Runtime 和其他依赖，仅更新程序或补齐变化的组件。只有在安装向导中主动勾选“完整修复运行环境”才会删除并重建 Runtime；两种模式都不会改动 Workspace。安装器会实时显示并自动滚动安装日志，完整记录同时保存在 `D:\YOLOTeamTrainingPlatform\Workspace\logs\installation.log`。
 
-开发源码模式仍保留以下脚本：
+开发源码模式优先使用以下无命令行启动入口；旧 `.cmd` 文件继续保留兼容，但双击批处理文件时 Windows 仍可能短暂闪过一次控制台：
 
-- `启动训练面板.cmd`：打开平台。
-- `关闭训练面板.cmd`：关闭平台，不会删除数据或模型。
-- `启动个人标注中心.cmd`：本机离线标注。
-- `开启局域网协作标注.cmd`：让伙伴通过浏览器协作。
-- `关闭协作标注中心.cmd`：停止标注服务，不删除数据。
+- `启动YOLO团队训练平台.vbs`：无命令行窗口打开平台。
+- `关闭YOLO团队训练平台.vbs`：后台关闭平台，不会删除数据或模型。
+- `启动个人标注中心.vbs`：无命令行窗口启动本机离线标注。
+- `开启局域网协作标注.vbs`：后台开启团队共享。
+- `关闭协作标注中心.vbs`：后台停止标注服务，不删除数据。
 
 网页模式默认使用 <http://127.0.0.1:8989/>。Windows 桌面版检测到已有 YOLO 训练面板时，会询问是否关闭旧服务；选择“否”会保留旧服务并退出，绝不会同时启动第二个训练面板。若默认端口仅被其他软件占用，桌面版会使用其他仅限本机访问的端口。实际地址记录在 `Workspace/logs/launcher.log`。
 
@@ -64,7 +64,7 @@ Ubuntu 上访问：<http://127.0.0.1:8989/>。如果要从其他电脑访问，�
 维护者运行 `installer/windows/build-installer.ps1`，程序会在 `dist` 文件夹生成：
 
 ```text
-YOLO-Team-Training-Platform-Setup-v3.2.16-beta.exe
+YOLO-Team-Training-Platform-Setup-v3.2.17-beta.exe
 ```
 
 安装器不会打包本机 Workspace、私人路径、训练数据、日志和训练结果。
@@ -195,7 +195,7 @@ dataset/
 
 ### 双击后没有网页
 
-再次双击 `启动训练面板.cmd`，或手动访问 <http://127.0.0.1:8989/>。仍打不开时查看 `workspace/logs/launcher.log` 和 `workspace/logs/panel.log`。
+再次双击 `启动YOLO团队训练平台.vbs`，或手动访问 <http://127.0.0.1:8989/>。仍打不开时查看 `workspace/logs/launcher.log` 和 `workspace/logs/panel.log`。
 
 ### 安装中断
 
@@ -217,15 +217,15 @@ dataset/
 
 ```text
 一键安装并启动.cmd       队友第一次使用
-启动训练面板.cmd         日常启动
-关闭训练面板.cmd         日常关闭
+启动YOLO团队训练平台.vbs  Windows 无窗口日常启动
+关闭YOLO团队训练平台.vbs  Windows 无窗口日常关闭
 制作队友部署包.cmd       生成分享 ZIP
 ubuntu_install_and_start.sh Ubuntu 第一次部署
 ubuntu_start_train_panel.sh Ubuntu 日常启动
 ubuntu_stop_train_panel.sh  Ubuntu 日常停止
-启动个人标注中心.cmd      Windows 本机离线标注
-开启局域网协作标注.cmd    Windows 团队共享标注
-关闭协作标注中心.cmd      Windows 停止标注服务
+启动个人标注中心.vbs      Windows 无窗口本机离线标注
+开启局域网协作标注.vbs    Windows 无窗口团队共享标注
+关闭协作标注中心.vbs      Windows 无窗口停止标注服务
 ubuntu_start_annotation.sh Ubuntu 个人/共享标注
 ubuntu_stop_annotation.sh  Ubuntu 停止标注服务
 train_panel.py           网页与本地服务

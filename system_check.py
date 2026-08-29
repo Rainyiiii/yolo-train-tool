@@ -13,6 +13,7 @@ from packaging.specifiers import SpecifierSet
 from packaging.version import InvalidVersion, Version
 
 from platform_paths import LOG_DIR, PRODUCT_NAME
+from platform_subprocess import hidden_creationflags
 
 ROOT = Path(__file__).resolve().parent
 REPORT_PATH = LOG_DIR / "system-check.json"
@@ -73,6 +74,7 @@ def nvidia_name() -> str:
             capture_output=True,
             text=True,
             timeout=8,
+            creationflags=hidden_creationflags(),
         )
         if result.returncode == 0:
             return result.stdout.strip().splitlines()[0]

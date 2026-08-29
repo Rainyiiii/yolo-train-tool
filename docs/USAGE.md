@@ -16,7 +16,7 @@ cd yolo-train-tool
 普通队友直接双击发布页中的安装器：
 
 ```text
-YOLO-Team-Training-Platform-Setup-v3.2.16-beta.exe
+YOLO-Team-Training-Platform-Setup-v3.2.17-beta.exe
 ```
 
 安装器会自动：
@@ -31,7 +31,7 @@ YOLO-Team-Training-Platform-Setup-v3.2.16-beta.exe
 
 以后直接运行新版安装包即可覆盖升级。默认模式会保留并检查现有 Runtime，依赖没有变化时不联网执行 pip 下载；需要新增依赖时只补装缺失或不兼容项。如果运行环境确实损坏，可在安装向导中主动勾选“完整修复运行环境”，重新创建 Python、PyTorch、ONNX Runtime 等组件。完整修复同样不会删除 Workspace 中的数据集、标注、模型和配置。
 
-以后双击桌面上的“YOLO团队训练平台”。源码开发者仍可使用 `启动YOLO团队训练平台.cmd`。
+以后双击桌面上的“YOLO团队训练平台”。源码开发者建议使用无命令行窗口的 `启动YOLO团队训练平台.vbs`；旧 `.cmd` 仅用于兼容。
 
 打开后默认进入“工作台总览”。平台按“项目 → 数据 → 训练 → 验证 → 部署”显示当前进度并给出下一步。按 `Ctrl+K` 可快速查找页面；自动跟踪标注等实验能力默认隐藏，可在左侧导航底部主动开启。
 
@@ -66,8 +66,8 @@ bash ubuntu_stop_train_panel.sh
 
 训练面板左侧进入“协作标注”，或直接运行：
 
-- Windows 个人使用：`启动个人标注中心.cmd`
-- Windows 局域网共享：`开启局域网协作标注.cmd`
+- Windows 个人使用：`启动个人标注中心.vbs`
+- Windows 局域网共享：`开启局域网协作标注.vbs`
 - Ubuntu 个人使用：`bash ubuntu_start_annotation.sh`
 - Ubuntu 局域网共享：`bash ubuntu_start_annotation.sh --share`
 

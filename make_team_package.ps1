@@ -22,7 +22,7 @@ if (Test-Path -LiteralPath $temporaryRoot) {
 }
 New-Item -ItemType Directory -Path $temporaryRoot | Out-Null
 
-$allowedExtensions = @(".py", ".ps1", ".cmd", ".bat", ".sh", ".json", ".md", ".txt")
+$allowedExtensions = @(".py", ".ps1", ".cmd", ".bat", ".vbs", ".sh", ".json", ".md", ".txt")
 $trackedTopLevel = $null
 if (Test-Path -LiteralPath (Join-Path $ScriptRoot ".git")) {
     $gitCommand = Get-Command git.exe -ErrorAction SilentlyContinue

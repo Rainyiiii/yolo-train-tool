@@ -50,6 +50,7 @@ from platform_paths import (
     TRAINING_RUNS_DIR,
     ensure_workspace,
 )
+from platform_subprocess import hidden_creationflags
 
 
 
@@ -541,9 +542,7 @@ def subprocess_env() -> dict[str, str]:
 
 
 def subprocess_creationflags() -> int:
-    if os.name == "nt":
-        return subprocess.CREATE_NEW_PROCESS_GROUP
-    return 0
+    return hidden_creationflags(new_process_group=True)
 
 
 def terminate_process_tree(proc: subprocess.Popen[Any], timeout: float = 3.0) -> None:
@@ -556,6 +555,7 @@ def terminate_process_tree(proc: subprocess.Popen[Any], timeout: float = 3.0) ->
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=False,
+            creationflags=hidden_creationflags(),
         )
     else:
         try:
@@ -1165,6 +1165,7 @@ def query_local_resources(cache_seconds: float = 5.0) -> dict[str, Any]:
             text=True,
             timeout=2,
             check=False,
+            creationflags=hidden_creationflags(),
         )
         lines = (result.stdout or "").strip().splitlines()
         if lines:

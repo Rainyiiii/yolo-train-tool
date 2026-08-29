@@ -14,6 +14,7 @@ from pathlib import Path
 import psutil
 
 from platform_paths import LOG_DIR, PRODUCT_NAME, STATE_DIR, ensure_workspace
+from platform_subprocess import hidden_creationflags
 
 
 ROOT = Path(__file__).resolve().parent
@@ -231,13 +232,7 @@ def start_panel(no_browser: bool = False, port: int = DEFAULT_PANEL_PORT) -> int
         return 1
 
     LOG_DIR.mkdir(parents=True, exist_ok=True)
-    creation_flags = 0
-    if os.name == "nt":
-        creation_flags = (
-            subprocess.CREATE_NO_WINDOW
-            | subprocess.DETACHED_PROCESS
-            | subprocess.CREATE_NEW_PROCESS_GROUP
-        )
+    creation_flags = hidden_creationflags(new_process_group=True, detached=True)
 
     with LOG_FILE.open("a", encoding="utf-8") as log:
         log.write(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] Starting {PRODUCT_NAME}\n")

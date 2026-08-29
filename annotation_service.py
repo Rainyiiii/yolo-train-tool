@@ -18,6 +18,7 @@ import psutil
 
 from annotation_server import DEFAULT_WORKSPACE, discover_lan_addresses
 from platform_paths import LOG_DIR, PRODUCT_NAME, STATE_DIR, ensure_workspace
+from platform_subprocess import hidden_creationflags
 
 
 ROOT = Path(__file__).resolve().parent
@@ -135,9 +136,7 @@ def start(shared: bool, workspace: Path, no_browser: bool) -> int:
     remove_record()
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     workspace.mkdir(parents=True, exist_ok=True)
-    creation_flags = 0
-    if os.name == "nt":
-        creation_flags = subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+    creation_flags = hidden_creationflags(new_process_group=True, detached=True)
     command = [sys.executable, "-u", str(SERVER_SCRIPT), "--port", str(PORT), "--workspace", str(workspace), "--no-browser"]
     if shared:
         command.append("--share")

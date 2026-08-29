@@ -30,6 +30,7 @@ from platform_paths import (
     safe_identifier,
     unique_directory,
 )
+from platform_subprocess import hidden_creationflags
 
 
 
@@ -63,7 +64,13 @@ def subprocess_env():
 def run(cmd, cwd=None, check=True):
     argv = [str(x) for x in cmd]
     print("\n$ " + " ".join(argv), flush=True)
-    result = subprocess.run(argv, cwd=cwd, check=False, env=subprocess_env())
+    result = subprocess.run(
+        argv,
+        cwd=cwd,
+        check=False,
+        env=subprocess_env(),
+        creationflags=hidden_creationflags(),
+    )
     if check and result.returncode != 0:
         raise subprocess.CalledProcessError(result.returncode, argv)
     return result
@@ -76,7 +83,13 @@ def interrupt_process_tree(proc: subprocess.Popen, timeout: float = 8.0) -> None
         try:
             proc.send_signal(signal.CTRL_BREAK_EVENT)
         except Exception:
-            subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            subprocess.run(
+                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                creationflags=hidden_creationflags(),
+            )
             return
     else:
         try:
@@ -87,7 +100,13 @@ def interrupt_process_tree(proc: subprocess.Popen, timeout: float = 8.0) -> None
         proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
         if os.name == "nt":
-            subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            subprocess.run(
+                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                creationflags=hidden_creationflags(),
+            )
         else:
             try:
                 os.killpg(proc.pid, signal.SIGKILL)
@@ -102,7 +121,7 @@ def run_train_command(cmd, stop_signal: Path | None = None, cwd=None):
         argv,
         cwd=cwd,
         env=subprocess_env(),
-        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
+        creationflags=hidden_creationflags(new_process_group=True),
         start_new_session=(os.name != "nt"),
     )
     while True:

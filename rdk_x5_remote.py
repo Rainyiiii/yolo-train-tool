@@ -15,6 +15,8 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+from platform_subprocess import hidden_creationflags
+
 
 def configure_stdio() -> None:
     for stream in (sys.stdout, sys.stderr):
@@ -96,6 +98,7 @@ def _run_stream(command: list[str], input_text: str = "") -> None:
         stdin=subprocess.PIPE if input_text else None,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
+        creationflags=hidden_creationflags(),
     )
     if input_text and process.stdin is not None:
         process.stdin.write(input_text.encode("utf-8"))
@@ -123,6 +126,7 @@ def _capture(command: list[str]) -> str:
             stderr=subprocess.PIPE,
             env=child_env,
             timeout=30,
+            creationflags=hidden_creationflags(),
         )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError("命令检查超时，请确认 WSL/SSH 没有等待首次初始化或交互输入。") from exc
@@ -161,6 +165,7 @@ def _capture_wsl(distro: str, shell_code: str, user: str = "") -> str:
             stderr=subprocess.PIPE,
             env=child_env,
             timeout=30,
+            creationflags=hidden_creationflags(),
         )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError("WSL 状态检查超时；首次安装后请先重启 Windows，再返回平台继续配置。") from exc

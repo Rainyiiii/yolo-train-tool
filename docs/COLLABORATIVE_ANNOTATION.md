@@ -9,7 +9,7 @@ YOLO团队训练平台的协作标注中心是不依赖 Docker 的图片目标�
 Windows 双击：
 
 ```text
-启动个人标注中心.cmd
+启动个人标注中心.vbs
 ```
 
 Ubuntu：
@@ -25,7 +25,7 @@ bash ubuntu_start_annotation.sh
 Windows 双击：
 
 ```text
-开启局域网协作标注.cmd
+开启局域网协作标注.vbs
 ```
 
 Ubuntu：
@@ -132,7 +132,7 @@ Workspace/annotation-hub/
 Windows：
 
 ```text
-关闭协作标注中心.cmd
+关闭协作标注中心.vbs
 ```
 
 Ubuntu：

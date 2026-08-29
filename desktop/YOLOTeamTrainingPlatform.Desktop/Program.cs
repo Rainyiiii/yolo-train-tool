@@ -122,6 +122,7 @@ internal sealed class MainWindow : Form
             WorkingDirectory = appRoot,
             UseShellExecute = false,
             CreateNoWindow = true,
+            WindowStyle = ProcessWindowStyle.Hidden,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             StandardOutputEncoding = Encoding.UTF8,

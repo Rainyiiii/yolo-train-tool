@@ -1,2 +1,3 @@
 @echo off
-call "%~dp0stop_train_panel.cmd"
+wscript.exe "%~dp0关闭YOLO团队训练平台.vbs"
+exit /b %ERRORLEVEL%

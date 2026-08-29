@@ -18,6 +18,8 @@ import textwrap
 from pathlib import Path
 from typing import Iterable
 
+from platform_subprocess import hidden_creationflags
+
 APP_NAME = "remote-train-env"
 CONFIG_NAME = "environment.json"
 SUPPORTED_TORCH = {"cu118", "cu121", "cu124", "cu126", "cu128", "cpu", "none"}
@@ -46,7 +48,7 @@ def print_command(command: Iterable[object]) -> None:
 def run(command: Iterable[object], *, env: dict[str, str] | None = None) -> None:
     command = [str(item) for item in command]
     print_command(command)
-    subprocess.run(command, check=True, env=env)
+    subprocess.run(command, check=True, env=env, creationflags=hidden_creationflags())
 
 
 def env_vars(root: Path) -> dict[str, str]:
@@ -117,6 +119,7 @@ def locate_host_python(requested: str) -> list[str]:
                 text=True,
                 timeout=8,
                 check=False,
+                creationflags=hidden_creationflags(),
             )
             if probe.returncode != 0:
                 continue
@@ -244,7 +247,11 @@ def doctor(args: argparse.Namespace) -> None:
         run([python, "-c", code], env=env_vars(root))
     nvidia_smi = shutil.which("nvidia-smi")
     if nvidia_smi:
-        subprocess.run([nvidia_smi, "--query-gpu=name,driver_version,memory.total", "--format=csv,noheader"], check=False)
+        subprocess.run(
+            [nvidia_smi, "--query-gpu=name,driver_version,memory.total", "--format=csv,noheader"],
+            check=False,
+            creationflags=hidden_creationflags(),
+        )
     else:
         print("提示：未找到 nvidia-smi；若需 GPU 训练，请确认 NVIDIA 驱动已由管理员安装。")
 
