@@ -136,7 +136,7 @@ def start(shared: bool, workspace: Path, no_browser: bool) -> int:
     remove_record()
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     workspace.mkdir(parents=True, exist_ok=True)
-    creation_flags = hidden_creationflags(new_process_group=True, detached=True)
+    creation_flags = hidden_creationflags(new_process_group=True)
     command = [sys.executable, "-u", str(SERVER_SCRIPT), "--port", str(PORT), "--workspace", str(workspace), "--no-browser"]
     if shared:
         command.append("--share")

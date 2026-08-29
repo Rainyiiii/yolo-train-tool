@@ -1,5 +1,12 @@
 # 更新记录
 
+## 3.2.18-beta
+
+- 修复 Windows 11 把 Windows Terminal 设为默认终端时，启动平台仍会弹出标题为 Python 路径的终端窗口。
+- 后台训练和标注服务不再组合 `CREATE_NO_WINDOW` 与 `DETACHED_PROCESS`，统一只使用无窗口标志和独立进程组；服务仍可在桌面外壳启动命令结束后持续运行。
+- 增加 Windows Terminal 委托控制台回归约束，禁止服务启动路径重新引入 `DETACHED_PROCESS`。
+- 完成 92 项自动化、真实安装目录复现、可见窗口进程归因、Python 语法、WebView2 Release 编译及安装器打包回归。
+
 ## 3.2.17-beta
 
 - 修复网页内启动训练、模型下载、检测、导出、系统诊断及 RDK/WSL/SSH 任务时，部分 Windows 电脑会弹出黑色命令行窗口的问题。

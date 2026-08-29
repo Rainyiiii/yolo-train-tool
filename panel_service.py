@@ -232,7 +232,7 @@ def start_panel(no_browser: bool = False, port: int = DEFAULT_PANEL_PORT) -> int
         return 1
 
     LOG_DIR.mkdir(parents=True, exist_ok=True)
-    creation_flags = hidden_creationflags(new_process_group=True, detached=True)
+    creation_flags = hidden_creationflags(new_process_group=True)
 
     with LOG_FILE.open("a", encoding="utf-8") as log:
         log.write(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] Starting {PRODUCT_NAME}\n")

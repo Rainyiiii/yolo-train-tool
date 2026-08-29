@@ -18,8 +18,16 @@ class WindowsHiddenProcessTest(unittest.TestCase):
         if os.name == "nt":
             self.assertTrue(flags & subprocess.CREATE_NO_WINDOW)
             self.assertTrue(flags & subprocess.CREATE_NEW_PROCESS_GROUP)
+            self.assertFalse(flags & subprocess.DETACHED_PROCESS)
         else:
             self.assertEqual(flags, 0)
+
+    def test_services_never_request_detached_process(self) -> None:
+        for name in ("panel_service.py", "annotation_service.py"):
+            with self.subTest(module=name):
+                source = (ROOT / name).read_text(encoding="utf-8")
+                self.assertNotIn("DETACHED_PROCESS", source)
+                self.assertNotIn("detached=True", source)
 
     @unittest.skipUnless(os.name == "nt", "Windows console behavior")
     def test_real_python_child_has_no_console_window(self) -> None:
