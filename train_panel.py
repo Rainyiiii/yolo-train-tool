@@ -38,6 +38,7 @@ from annotation_service import status_payload as annotation_service_status
 from project_manager import activate_project, create_project, delete_project, duplicate_project, inspect_dataset, project_catalog, update_project
 from rdk_x5_remote import inspect_wsl_environment
 from system_check import build_report
+from software_update import check_for_updates, current_version
 from platform_paths import (
     ANNOTATION_HUB_DIR,
     CONFIG_DIR,
@@ -2969,6 +2970,7 @@ body.sidebar-collapsed .status{display:none}
 @media(min-width:981px){.hero .title{grid-template-columns:auto minmax(210px,auto) minmax(0,1fr) auto auto}body.sidebar-collapsed .nav-group,body.sidebar-collapsed .nav-footer{display:none}}
 .diagnostics{display:grid;grid-template-columns:minmax(220px,.65fr) minmax(0,1.35fr);gap:14px;margin-top:18px;padding:16px;border:1px solid var(--line);border-radius:16px;background:#fff}.diagnostics-summary{display:grid;align-content:center;gap:5px}.diagnostics-summary b{font-size:17px}.diagnostics-summary span,.diagnostics-detail{color:var(--muted);font-size:12px}.diagnostics-detail{display:flex;gap:7px;flex-wrap:wrap;align-content:center}.diagnostic-chip{padding:6px 9px;border:1px solid var(--line);border-radius:999px;background:#f7f9fc;color:#536174}.diagnostic-chip.ok{color:#167a4d;border-color:#bfe5d2;background:#edf9f2}.diagnostic-chip.error{color:#b32930;border-color:#efbfc2;background:#fff1f2}
 .diagnostics-actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:7px}.diagnostics-actions .btn{padding:8px 10px;font-size:12px}.readiness-head{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:13px 14px;border:1px solid var(--line);border-radius:14px;background:#fffafa}.readiness-head b,.readiness-head span{display:block}.readiness-head span{margin-top:3px;color:var(--muted);font-size:12px}.readiness-items{display:grid;gap:8px}.check-item.pending .check-icon{color:#657386;background:#edf1f5}
+.update-center{margin:16px 0;padding:16px;border:1px solid var(--line);border-radius:17px;background:linear-gradient(135deg,#fff,#fff8f8)}.update-head{display:flex;justify-content:space-between;gap:14px;align-items:flex-start}.update-title{display:grid;gap:4px}.update-title span,.update-meta{color:var(--muted);font-size:12px}.update-title b{font-size:17px}.update-badge{display:inline-flex;align-items:center;padding:6px 10px;border-radius:999px;border:1px solid #d7dde5;background:#f5f7fa;color:#5d6878;font-size:11px;font-weight:750}.update-badge.available{border-color:#efb0b0;background:#fff0f0;color:#ac2828}.update-badge.current{border-color:#bfe5d2;background:#edf9f2;color:#167a4d}.update-notes{margin-top:12px;padding:12px 14px;max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:13px;background:#fbfcfe;color:#4f5c6b;font:12px/1.65 "Microsoft YaHei UI","Segoe UI",sans-serif;white-space:pre-wrap;overflow-wrap:anywhere}.update-actions{display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px}.update-actions .btn[hidden]{display:none!important}.update-progress{min-width:180px;color:var(--muted);font-size:12px}.update-progress strong{color:#a72b2b}
 @media(max-width:1100px){.pipeline{grid-template-columns:repeat(3,minmax(0,1fr))}.dashboard-hero{grid-template-columns:1fr}.header-tool{display:none}}
 @media(max-width:700px){.pipeline{grid-template-columns:1fr 1fr}.dashboard-focus h3{font-size:20px}.train-primary-bar{bottom:0}.nav-group{display:none}.diagnostics{grid-template-columns:1fr}}
 @media(max-width:700px){.project-toolbar{grid-template-columns:1fr}.project-toolbar .mini{text-align:left}.project-card-menu{width:100%}.project-card-menu .btn{flex:1;text-align:center}.project-modal-panel{padding:17px}}
@@ -3043,6 +3045,11 @@ body.sidebar-collapsed .status{display:none}
         <div class="dashboard-hero">
           <div class="dashboard-focus"><div class="dashboard-kicker">建议的下一步</div><h3 id="dashboard-next-title">创建或选择一个项目</h3><p class="hint" id="dashboard-next-detail">项目会把数据集、训练记录、模型和部署产物关联起来。</p><div class="dashboard-actions"><button id="dashboard-primary" class="btn primary" onclick="showTab('projects')">打开项目中心</button><button class="btn" onclick="openCommandPalette()">查找功能</button></div></div>
           <div class="dashboard-side"><div class="dashboard-stat"><span>当前项目</span><b id="dashboard-project">未选择</b></div><div class="dashboard-stat"><span>数据状态</span><b id="dashboard-dataset">未检查</b></div><div class="dashboard-stat"><span>训练记录</span><b id="dashboard-runs">0</b></div><div class="dashboard-stat"><span>模型产物</span><b id="dashboard-models">0</b></div></div>
+        </div>
+        <div class="update-center" id="update-center">
+          <div class="update-head"><div class="update-title"><span>软件更新</span><b id="update-title">版本状态</b><span id="update-meta">当前版本 <strong id="current-version">读取中…</strong> · 启动后低频自动检查，也可以随时手动检查。</span></div><span id="update-badge" class="update-badge">尚未检查</span></div>
+          <div id="update-notes" class="update-notes" hidden></div>
+          <div class="update-actions"><span id="update-progress" class="update-progress">不会自动下载安装，所有操作均由你确认。</span><div class="btns"><button id="update-release-button" class="btn" hidden onclick="openUpdateRelease()">查看发布页</button><button id="update-download-button" class="btn green" hidden onclick="downloadAndInstallUpdate()">下载并安装</button><button id="update-check-button" class="btn" onclick="checkSoftwareUpdate(true)">检查更新</button></div></div>
         </div>
         <h3>完整流程</h3>
         <div class="pipeline" id="dashboard-pipeline">
@@ -3535,6 +3542,14 @@ const commandEntries=[
 
 const rawLabelPrefix={manual:false,value:''};
 function toast(msg){const el=document.getElementById('toast');el.textContent=msg;el.classList.add('show');setTimeout(()=>el.classList.remove('show'),2600)}
+let softwareUpdate=null;
+function readableReleaseNotes(value){return String(value||'暂无更新说明。').replace(/^#{1,6}\s+/gm,'').replace(/\*\*(.*?)\*\*/g,'$1').replace(/\[(.*?)\]\((https?:\/\/[^)]+)\)/g,'$1 · $2').trim()}
+function renderSoftwareUpdate(data){softwareUpdate=data||null;const current=document.getElementById('current-version'),title=document.getElementById('update-title'),meta=document.getElementById('update-meta'),badge=document.getElementById('update-badge'),notes=document.getElementById('update-notes'),download=document.getElementById('update-download-button'),release=document.getElementById('update-release-button'),progress=document.getElementById('update-progress');if(current)current.textContent=data?.current_version||data?.version||'-';if(!data?.ok){if(title)title.textContent=`当前版本 ${data?.current_version||data?.version||'-'}`;if(meta)meta.textContent=data?.error||'尚未检查更新';if(badge){badge.textContent='检查失败';badge.className='update-badge'}if(notes)notes.hidden=true;if(download)download.hidden=true;if(release)release.hidden=!data?.release_url;if(progress)progress.textContent='网络不可用不影响本地训练，可稍后重试。';return}const available=!!data.update_available;if(title)title.textContent=available?`发现新版本 ${data.latest_version}`:`当前已是最新版 ${data.current_version}`;if(meta)meta.textContent=`当前 ${data.current_version} · 最新 ${data.latest_version}${data.published_at?' · 发布于 '+new Date(data.published_at).toLocaleString():''}`;if(badge){badge.textContent=available?'可更新':'已是最新';badge.className='update-badge '+(available?'available':'current')}if(notes){notes.textContent=readableReleaseNotes(data.notes);notes.hidden=false}if(download)download.hidden=!(available&&data.download_url);if(release)release.hidden=!data.release_url;if(progress)progress.textContent=available?(data.download_url?'更新包已就绪，下载和安装前会再次确认。':'新版本暂未附带 Windows 安装包。'):'上次检查完成。'}
+async function loadCurrentVersion(){try{const r=await fetch('/api/version');const j=await r.json();renderSoftwareUpdate({version:j.version,current_version:j.version,release_url:'https://github.com/Rainyiiii/yolo-train-tool/releases'})}catch(e){}}
+async function checkSoftwareUpdate(manual=false){const button=document.getElementById('update-check-button');if(button){button.disabled=true;button.textContent='正在检查…'}try{const r=await fetch(`/api/update-check?force=${manual?'1':'0'}`);const j=await r.json();renderSoftwareUpdate(j);if(j.ok)localStorage.setItem('yoloTeamPlatformUpdateCheckedAt',String(Date.now()));if(manual)toast(j.ok?(j.update_available?`发现新版本 ${j.latest_version}`:'当前已经是最新版'):j.error)}catch(e){renderSoftwareUpdate({ok:false,current_version:document.getElementById('current-version')?.textContent||'-',error:`检查更新失败：${e.message}`,release_url:'https://github.com/Rainyiiii/yolo-train-tool/releases'});if(manual)toast('检查更新失败，请确认网络连接')}finally{if(button){button.disabled=false;button.textContent='检查更新'}}}
+function openUpdateRelease(){const url=softwareUpdate?.release_url||'https://github.com/Rainyiiii/yolo-train-tool/releases';window.open(url,'_blank','noopener')}
+function downloadAndInstallUpdate(){if(!softwareUpdate?.download_url)return;if(window.chrome?.webview){window.chrome.webview.postMessage({type:'install-update',version:softwareUpdate.latest_version,url:softwareUpdate.download_url,name:softwareUpdate.asset_name,size:Number(softwareUpdate.asset_size||0),digest:softwareUpdate.asset_digest||''});document.getElementById('update-progress').textContent='正在交给桌面更新器…';return}window.open(softwareUpdate.download_url,'_blank','noopener');toast('浏览器模式已打开安装包下载页')}
+if(window.chrome?.webview){window.chrome.webview.addEventListener('message',event=>{const message=event.data||{};if(message.type!=='update-status')return;const progress=document.getElementById('update-progress');if(progress)progress.textContent=message.message||'';if(message.error)toast(message.message||'更新失败')})}
 function applySidebarState(collapsed){document.body.classList.toggle('sidebar-collapsed',collapsed);const toggle=document.getElementById('sidebar-toggle');if(!toggle)return;toggle.setAttribute('aria-expanded',String(!collapsed));toggle.setAttribute('aria-label',collapsed?'展开导航':'收起导航');const label=toggle.querySelector('b');if(label)label.textContent=collapsed?'展开导航':'收起导航'}
 function toggleSidebar(){const collapsed=!document.body.classList.contains('sidebar-collapsed');localStorage.setItem('yoloTeamPlatformSidebarCollapsed',collapsed?'1':'0');applySidebarState(collapsed)}
 function escapeHtml(value){return String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]))}
@@ -3754,6 +3769,8 @@ updateTestSourceUI();
 updateExportOptionsUI();
 loadDeviceProfiles();
 loadProjects();
+loadCurrentVersion();
+if(Date.now()-Number(localStorage.getItem('yoloTeamPlatformUpdateCheckedAt')||0)>6*60*60*1000)setTimeout(()=>checkSoftwareUpdate(false),1800);
 refreshState(); setInterval(refreshState,1400);
 setInterval(()=>{const state=panelRuntimeState||{};if(String(state.job||'').startsWith('rdk_wsl_')&&!state.running&&state.finished_at){const key=`${state.job}|${state.finished_at}|${state.exit_code}`;if(key!==rdkEnvironmentLastJob){rdkEnvironmentLastJob=key;loadRdkEnvironmentStatus()}}},1600);
 
@@ -3821,6 +3838,14 @@ class PanelHandler(BaseHTTPRequestHandler):
                     "finished_at": STATE["finished_at"],
                     "last_error": STATE["last_error"],
                 })
+            return
+        if parsed.path == "/api/version":
+            self.send_json({"version": current_version()})
+            return
+        if parsed.path == "/api/update-check":
+            params = parse_qs(parsed.query)
+            force = params.get("force", ["0"])[0] == "1"
+            self.send_json(check_for_updates(force=force))
             return
         if parsed.path == "/api/device-profiles":
             self.send_json({"items": public_device_profiles()})

@@ -69,15 +69,28 @@ jobs:
           $tag = $env:GITHUB_REF_NAME
           $installer = Get-ChildItem -LiteralPath dist -Filter "YOLO-Team-Training-Platform-Setup-*.exe" | Select-Object -First 1
           if (!$installer) { throw "Installer not found." }
+          $releaseNotes = Join-Path $env:RUNNER_TEMP "release-notes.md"
+          python scripts/release_notes.py --version $tag --changelog CHANGELOG.md --output $releaseNotes
+          if ($LASTEXITCODE -ne 0 -or !(Test-Path -LiteralPath $releaseNotes)) {
+            throw "Release notes extraction failed. Add this version to CHANGELOG.md before tagging."
+          }
           & gh release view $tag *> $null
           $releaseExists = $LASTEXITCODE -eq 0
           if ($releaseExists) {
+            $editArgs = @(
+              "release", "edit", $tag,
+              "--title", "YOLO团队训练平台 $tag",
+              "--notes-file", $releaseNotes
+            )
+            if ($tag.Contains("-")) { $editArgs += "--prerelease" }
+            & gh @editArgs
+            if ($LASTEXITCODE -ne 0) { throw "GitHub Release notes update failed." }
             & gh release upload $tag $installer.FullName --clobber
           } else {
             $releaseArgs = @(
               "release", "create", $tag, $installer.FullName,
               "--title", "YOLO团队训练平台 $tag",
-              "--generate-notes"
+              "--notes-file", $releaseNotes
             )
             if ($tag.Contains("-")) { $releaseArgs += "--prerelease" }
             & gh @releaseArgs

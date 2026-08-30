@@ -8,3 +8,4 @@ onnxruntime>=1.18,<2
 PyYAML>=6,<7
 psutil>=6,<8
 packaging>=24,<27
+certifi>=2024.2.2

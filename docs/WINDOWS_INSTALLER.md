@@ -5,7 +5,7 @@
 队友只需要运行：
 
 ```text
-YOLO-Team-Training-Platform-Setup-v3.2.18-beta.exe
+YOLO-Team-Training-Platform-Setup-v3.2.19-beta.exe
 ```
 
 安装器默认选择 `D:\YOLOTeamTrainingPlatform`，并自动完成：
@@ -27,6 +27,8 @@ WSL、Ubuntu 22.04 和 RDK X5 Mapper 不随主安装强制部署。需要 RDK X5
 
 WebView2 桌面程序只加载本机回环地址的平台页面，默认端口为 8989。它不会重复启动 YOLO 训练服务：发现旧服务时询问是否关闭，选择“否”会保留旧服务并退出；只有端口被其他软件占用时才选择备用端口。外部文档链接交给系统浏览器，下载文件保存到 `Workspace/exports/downloads`。关闭桌面窗口时只停止当前窗口启动的训练面板，不删除工作区，也不会误停独立运行的协作标注服务。启动诊断记录在 `Workspace/logs/launcher.log`。
 
+软件更新由本地 Python 服务读取固定仓库的 GitHub Releases，桌面壳负责受控下载与启动安装。更新请求只接受 `https://github.com/Rainyiiii/yolo-train-tool/releases/download/` 下、名称与目标版本严格对应的 Setup；下载后校验 Release 大小、可用的 SHA-256 摘要和安装包内部版本。安装前后均由用户确认，不会后台静默替换程序。
+
 ## 卸载与用户数据
 
 从 Windows“已安装的应用”卸载时，程序会停止本机服务，并始终删除实际安装目录下由平台管理的 `App`、`Desktop` 和 `Runtime`。卸载器随后询问是否保留 `Workspace`：
@@ -47,7 +49,7 @@ WebView2 桌面程序只加载本机回环地址的平台页面，默认端口�
 
 生成文件位于 `dist/`。脚本会从微软官方下载并缓存 .NET Desktop Runtime 与 WebView2 Evergreen Bootstrapper。
 
-推送 `v*` 版本标签后，GitHub Actions 会执行同一个构建脚本，将 Setup 保存为工作流产物并自动创建 GitHub Release。应用源码、Python 核心源码和安装器源码始终保留在同一仓库、同一提交中。
+推送 `v*` 版本标签后，GitHub Actions 会执行同一个构建脚本，将 Setup 保存为工作流产物并自动创建 GitHub Release。发布前必须先在 `CHANGELOG.md` 添加与标签完全一致的二级版本标题和条目；工作流会把该段写入 Release，缺少内容时直接失败。应用内更新页读取的就是这份 Release 内容，因此仓库、发布页和软件显示保持一致。应用源码、Python 核心源码和安装器源码始终保留在同一仓库、同一提交中。
 
 ### Windows 代码签名
 
